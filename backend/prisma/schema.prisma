@@ -1,0 +1,55 @@
+// backend/prisma/schema.prisma
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// 1. ТАБЛИЦЯ КОТУШОК ПЛАСТИКУ
+model Spool {
+  id               String   @id
+  materialType     String
+  colorName        String
+  colorHex         String
+  totalWeightG     Int
+  remainingWeightG Int
+  createdAt        DateTime @default(now())
+  printers         Printer[]
+}
+
+// 2. ТАБЛИЦЯ ПРИНТЕРІВ
+model Printer {
+  id             String      @id
+  name           String
+  model          String
+  status         String      @default("idle")
+  currentSpoolId String?
+  currentSpool   Spool?      @relation(fields: [currentSpoolId], references: [id], onDelete: SetNull)
+  printTasks     PrintTask[]
+}
+
+// 3. ТАБЛИЦЯ ЧЕРГИ ЗАДАНЬ
+model PrintTask {
+  id                Int       @id @default(autoincrement())
+  modelName         String
+  userEmail         String
+  username          String
+  priority          String    @default("MEDIUM")
+  requestedColor    String
+  gdriveFileLink    String?
+  gdriveFolderPath  String?
+  
+  printerId         String?
+  printer           Printer?  @relation(fields: [printerId], references: [id], onDelete: SetNull)
+  estimatedWeightG  Int?
+  totalDurationMins Int?
+  
+  status            String    @default("pending")
+  startedAt         DateTime?
+  finishedAt        DateTime?
+  createdAt         DateTime  @default(now())
+}
