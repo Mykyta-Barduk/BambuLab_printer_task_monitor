@@ -35,21 +35,25 @@ model Printer {
 // 3. ТАБЛИЦЯ ЧЕРГИ ЗАДАНЬ
 model PrintTask {
   id                Int       @id @default(autoincrement())
-  modelName         String
+  modelName         String    // Ім'я файлу з Google Диску
   userEmail         String
   username          String
-  priority          String    @default("MEDIUM")
-  requestedColor    String
-  gdriveFileLink    String?
-  gdriveFolderPath  String?
-  
-  printerId         String?
-  printer           Printer?  @relation(fields: [printerId], references: [id], onDelete: SetNull)
-  estimatedWeightG  Int?
-  totalDurationMins Int?
-  
+  priority          String    @default("MEDIUM") // Сюди залітатиме LOW, MEDIUM або HIGH
+  materialType      String    @default("PLA")    // 🔥 ДОДАЛИ ЦЕ ПОЛЕ (PLA, PETG, ABS...)
+  requestedColor    String    @default("Any")    // Колір (Білий, Чорний...)
+  quantity          Int       @default(1)        // Кількість штук
+  comment           String?                      // Хотілки замовника
+  gdriveFileLink    String?   
+  gdriveFolderLink  String?   
+
   status            String    @default("pending")
+  estimatedWeightG  Float?
+  totalDurationMins Int?
   startedAt         DateTime?
   finishedAt        DateTime?
   createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  printerId         String?
+  printer           Printer?  @relation(fields: [printerId], references: [id])
 }

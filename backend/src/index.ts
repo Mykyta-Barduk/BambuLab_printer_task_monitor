@@ -37,34 +37,46 @@ app.get('/api/printers', async (req: Request, res: Response) => {
 // 3. ПРИЙОМ ЗАМОВЛЕНЬ З GOOGLE ФОРМИ (Webhook)
 app.post('/api/tasks/google-webhook', async (req: Request, res: Response) => {
   try {
-    const { modelName, userEmail, priority, requestedColor, gdriveFileLink } = req.body;
+    const { 
+      modelName, 
+      userEmail, 
+      priority, 
+      materialType,    // 🔥 Додали деструктуризацію матеріалу
+      requestedColor, 
+      quantity, 
+      comment, 
+      gdriveFileLink, 
+      gdriveFolderLink 
+    } = req.body;
 
-    // Валідація: перевіряємо, чи Google передав хоча б базові дані
+    // Валідація
     if (!modelName || !userEmail) {
       res.status(400).json({ error: 'Пропущено обовʼязкові поля: modelName або userEmail' });
       return;
     }
 
-    console.log(`📥 Отримано нове замовлення від Google Форми: ${modelName} (${userEmail})`);
+    // Оновлений інформативний лог — тепер видно і матеріал з кольором
+    console.log(`📥 Webhook: Нове замовлення "${modelName}" x${quantity || 1}шт. [Пріоритет: ${priority || 'MEDIUM'}] [Матеріал: ${materialType || 'PLA'}] від ${userEmail}`);
 
-    // Автоматично витягуємо юзернейм із пошти (все, що йде до знаку @)
-    // Наприклад: "ivan.ivanov@kpi.ua" -> "ivan.ivanov"
     const username = userEmail.split('@')[0];
 
-    // Створюємо нову задачу в черзі нашої бази даних
+    // Записуємо в базу з урахуванням матеріалу
     const newTask = await prisma.printTask.create({
       data: {
         modelName,
         userEmail,
         username,
-        priority: priority || 'MEDIUM', // Якщо пріоритет не вказано, ставимо середній
+        priority: priority || 'MEDIUM',
+        materialType: materialType || 'PLA', // 🔥 Записуємо матеріал в базу
         requestedColor: requestedColor || 'Any',
+        quantity: quantity ? Number(quantity) : 1, 
+        comment: comment || null,
         gdriveFileLink: gdriveFileLink || null,
-        status: 'pending', // Задача автоматично стає в чергу
+        gdriveFolderLink: gdriveFolderLink || null,
+        status: 'pending',
       },
     });
 
-    // Відповідаємо Google, що все пройшло успішно
     res.status(201).json({
       success: true,
       message: 'Замовлення успішно додано в чергу SmartFarm!',
