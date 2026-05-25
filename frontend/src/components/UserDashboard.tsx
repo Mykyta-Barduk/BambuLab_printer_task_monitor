@@ -62,7 +62,7 @@ export const UserDashboard: React.FC<UserDashboardProps> = ({ userEmail }) => {
   return (
     <div className="space-y-6 animate-fadeIn">
       
-      {/* 👋 ШАПКА КАБІНЕТУ З КНОПКОЮ ЗАМОВЛЕННЯ */}
+      {/* ШАПКА КАБІНЕТУ */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-slate-900 border border-slate-800 p-5 rounded-2xl">
         <div>
           <h2 className="text-lg font-bold text-white">Кабінет користувача SmartFarm</h2>
@@ -81,7 +81,7 @@ export const UserDashboard: React.FC<UserDashboardProps> = ({ userEmail }) => {
         </a>
       </div>
 
-      {/* 📊 СТАТИСТИКА БАЛАНСУ користувача */}
+      {/* СТАТИСТИКА БАЛАНСУ користувача */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <div className="p-4 bg-slate-900 border border-slate-800 rounded-xl flex items-center gap-4">
           <div className="p-3 bg-amber-500/10 rounded-lg border border-amber-500/20 text-amber-400">
@@ -116,7 +116,7 @@ export const UserDashboard: React.FC<UserDashboardProps> = ({ userEmail }) => {
         </div>
       </div>
 
-      {/* 📦 СПИСОК ЗАМОВЛЕНЬ З ФОРМИ */}
+      {/* СПИСОК ЗАМОВЛЕНЬ З ФОРМИ */}
       <div className="space-y-3">
         <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-2">
           <Box className="h-4 w-4 text-purple-400" />

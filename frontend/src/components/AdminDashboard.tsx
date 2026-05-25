@@ -338,7 +338,7 @@ export const AdminDashboard: React.FC = () => {
                 <h4 className="text-sm font-bold text-white flex items-center gap-2 uppercase tracking-wider"><Cpu className="h-4 w-4 text-purple-400" /> Монітор: {selectedPrinterName}</h4>
                 <p className="text-[10px] text-slate-500 font-mono mt-0.5">SN: {selectedPrinterJob.printerId}</p>
               </div>
-              {/* Хрестик закриття тепер стабільно скидає стан в null */}
+              {/* Хрестик закриття скидає стан в null */}
               <button onClick={() => setSelectedPrinterJob(null)} className="text-slate-500 hover:text-white"><X className="h-4 w-4" /></button>
             </div>
 
@@ -392,14 +392,14 @@ export const AdminDashboard: React.FC = () => {
                   </div>
                 ) : (
                   <div className="p-3.5 text-xs text-slate-500 bg-slate-950 border border-slate-850 rounded-xl italic">
-                    У черзі лабораторних замовлень немає відповідностей. Скрипт виводить поточні дані з терміналу MQTT.
+                    У черзі замовлень немає відповідностей. Скрипт виводить поточні дані з терміналу MQTT.
                   </div>
                 )}
               </div>
             </div>
 
             <div className="flex justify-end pt-2 border-t border-slate-800">
-              {/* Головна кнопка закриття тепер працює стабільно і залізобетонно */}
+              {/* Головна кнопка закриття */}
               <button onClick={() => setSelectedPrinterJob(null)} className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-xs font-semibold rounded-lg text-white transition-all">Закрити монітор</button>
             </div>
           </div>
