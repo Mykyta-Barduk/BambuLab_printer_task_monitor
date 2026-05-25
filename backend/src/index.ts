@@ -58,7 +58,7 @@ app.post('/api/tasks/google-webhook', async (req: Request, res: Response) => {
       return;
     }
 
-    console.log(`📥 Webhook: Нове замовлення "${modelName}" x${quantity || 1}шт. від ${userEmail}`);
+    console.log(`Webhook: Нове замовлення "${modelName}" x${quantity || 1}шт. від ${userEmail}`);
 
     // 1. АВТОМАТИЧНЕ СТВОРЕННЯ КОРИСТУВАЧА (якщо його ще немає в базі)
     let user = await prisma.user.findUnique({
@@ -250,7 +250,7 @@ app.post('/api/debug/simulate-print', async (req: Request, res: Response) => {
   }
 });
 
-// 🔥 7. АКТУАЛЬНИЙ МОНІТОРИНГ ДРУКУ (ВКЛЮЧАЮЧИ waiting_confirmation)
+// 7. АКТУАЛЬНИЙ МОНІТОРИНГ ДРУКУ (ВКЛЮЧАЮЧИ waiting_confirmation)
 app.get('/api/jobs/active', async (req: Request, res: Response) => {
   try {
     // Тепер витягуємо і ті, що друкуються, і ті, що чекають на твій контроль!
@@ -345,7 +345,7 @@ app.post('/api/jobs/:id/confirm', async (req: Request, res: Response) => {
         data: { status: finalJobStatus, finishedAt: new Date() }
       });
 
-      // Б) 🔥 НАЙГОЛОВНІШЕ: Примусово переводимо саме залізо принтера в статус "idle" та обнуляємо прогрес!
+      // Б)  Примусово переводимо саме залізо принтера в статус "idle" та обнуляємо прогрес!
       await tx.printer.update({
         where: { id: job.printerId },
         data: { 
@@ -465,12 +465,67 @@ app.get('/api/tasks/user/:email', async (req: Request, res: Response) => {
 });
 
 
+// 🔄 ФУНКЦІЯ АВТОМАТИЧНОГО ПІДВИЩЕННЯ ПРІОРИТЕТУ (AGING)
+async function agePrintTasks() {
+  try {
+    const NOW = new Date();
+    
+    // 1. Визначаємо часові ліміти (наприклад: 3 дні на підвищення пріоритету)
+    //
+    const threeDaysAgo = new Date(NOW.getTime() - 1 * 60 * 1000);
+    const sixDaysAgo = new Date(NOW.getTime() - 6 * 24 * 60 * 60 * 1000);
+
+    // 2. Піднімаємо з LOW до MEDIUM, якщо замовлення чекає більше 3 днів
+    const toMedium = await prisma.printTask.updateMany({
+      where: {
+        status: 'pending',
+        priority: 'LOW',
+        createdAt: { lt: threeDaysAgo } // Створено раніше, ніж 3 дні тому
+      },
+      data: {
+        priority: 'MEDIUM'
+      }
+    });
+
+    if (toMedium.count > 0) {
+      console.log(`[Aging System] ${toMedium.count} задач(і) автоматично піднято з LOW до MEDIUM через час очікування.`);
+    }
+
+    // 3. Піднімаємо з MEDIUM до HIGH, якщо сумарно чекає більше 6 днів
+    const toHigh = await prisma.printTask.updateMany({
+      where: {
+        status: 'pending',
+        priority: 'MEDIUM',
+        createdAt: { lt: sixDaysAgo }
+      },
+      data: {
+        priority: 'HIGH'
+      }
+    });
+
+    if (toHigh.count > 0) {
+      console.log(`[Aging System] ${toHigh.count} задач(і) отримали статус КРИТИЧНО/HIGH через тривалий простій черги!`);
+    }
+
+  } catch (error) {
+    console.error('Помилка при роботі сервісу старіння задач:', error);
+  }
+}
+
+
 // Запуск сервера
 app.listen(PORT, () => {
   console.log(`🚀 Сервер запущенно на http://localhost:${PORT}`);
   
-  // Запускаємо наш фоновий MQTT-монітор принтерів
+  // Запускаємо фоновий MQTT-монітор принтерів
   startBambuMonitor().catch(err => {
     console.error('Помилка при запуску Bambu Monitor:', err);
   });
+
+  // ЗАПУСКАЄМО СИСТЕМУ СТАРІННЯ ЗАДАЧ
+  // Функція буде стабільно перевіряти базу даних, наприклад, кожні 30 хвилин
+  setInterval(agePrintTasks, 30 * 60 * 1000);
+  
+  // Одноразовий швидкий запуск при старті сервера для перевірки "хвостів"
+  agePrintTasks();
 });

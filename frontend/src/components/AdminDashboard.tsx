@@ -9,7 +9,7 @@ interface PrintTask {
   username: string;
   quantity: number;
   status: string;
-  priority: string;
+  priority: string; // 'HIGH' | 'MEDIUM' | 'LOW'
   materialType: string;
   requestedColor: string;
   comment: string | null;
@@ -71,7 +71,6 @@ export const AdminDashboard: React.FC = () => {
         setAllTasks([]);
       }
 
-      // Синхронізуємо живі статуси принтерів з бази даних
       const printersData = Array.isArray(printersRes.data) ? printersRes.data : [];
       const mappedPrinters = printersData.map((p: any) => {
         const matchingJob = currentJobs.find(j => j.printerId.toLowerCase() === p.id.toLowerCase());
@@ -160,6 +159,31 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
+  //  Хелпер для визначення кольору пріоритету терміновості
+  const getPriorityBadgeClass = (priority: string) => {
+    const pr = priority ? priority.toUpperCase() : 'MEDIUM';
+    switch (pr) {
+      case 'HIGH':
+        return 'bg-red-500/10 text-red-400 border-red-500/30 font-black animate-pulse';
+      case 'LOW':
+        return 'bg-slate-800 text-slate-400 border-slate-700 font-normal';
+      case 'MEDIUM':
+      default:
+        return 'bg-amber-500/10 text-amber-400 border-amber-500/20 font-medium';
+    }
+  };
+
+  const getPriorityLabel = (priority: string) => {
+    const pr = priority ? priority.toUpperCase() : 'MEDIUM';
+    switch (pr) {
+      case 'HIGH': return '🔥 Терміново';
+      case 'LOW': return '💤 Низький';
+      case 'MEDIUM':
+      default:
+        return '⚡ Звичайний';
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center p-12 space-y-3 text-slate-400">
@@ -172,7 +196,7 @@ export const AdminDashboard: React.FC = () => {
   return (
     <div className="space-y-6 relative">
       
-      {/* 🧭 ВЕРХНІ ТАБИ */}
+      {/*  ВЕРХНІ ТАБИ */}
       <div className="flex border-b border-slate-800 gap-6">
         <button onClick={() => setActiveTab('tasks')} className={`pb-3 font-medium text-sm flex items-center gap-2 border-b-2 transition-all ${activeTab === 'tasks' ? 'border-purple-500 text-purple-400 font-semibold' : 'border-transparent text-slate-400 hover:text-slate-200'}`}>
           <Layers className="h-4 w-4" /> <span>Черга замовлень</span>
@@ -232,7 +256,7 @@ export const AdminDashboard: React.FC = () => {
             )}
           </div>
 
-          {/* Таблиця замовлень */}
+          {/* 📌 ТАБЛИЦЯ ЗАМОВЛЕНЬ З НОВОЮ КОЛОНКОЮ ПРІОРИТЕТУ */}
           <div>
             <h3 className="text-sm font-semibold text-slate-400 mb-3 uppercase tracking-wider">Загальний пул замовлень з форми Google</h3>
             <div className="bg-slate-900 border border-slate-800 rounded-xl max-h-[550px] overflow-y-auto relative shadow-inner">
@@ -241,6 +265,8 @@ export const AdminDashboard: React.FC = () => {
                   <tr className="text-slate-400 text-xs font-semibold uppercase tracking-wider">
                     <th className="p-4 bg-slate-950">Користувач</th>
                     <th className="p-4 bg-slate-950">Назва 3D-моделі</th>
+                    {/* НОВИЙ СЛУПЧИК ПРІОРИТЕТУ В ШАПЦІ ТАБЛИЦІ */}
+                    <th className="p-4 bg-slate-950">Пріоритет</th>
                     <th className="p-4 bg-slate-950">Матеріал</th>
                     <th className="p-4 bg-slate-950">Колір</th>
                     <th className="p-4 bg-slate-950 text-center">Коментар</th>
@@ -256,13 +282,21 @@ export const AdminDashboard: React.FC = () => {
                           <div className="font-medium text-white flex items-center gap-2"><User className="h-3.5 w-3.5 text-slate-500" />{task.username || 'Анонім'}</div>
                           <div className="text-xs text-slate-500 font-mono mt-0.5">{task.userEmail}</div>
                         </td>
-                        <td className="p-4 font-mono text-xs max-w-[220px]">
+                        <td className="p-4 font-mono text-xs max-w-[200px] truncate">
                           {task.gdriveFileLink ? (
                             <a href={task.gdriveFileLink} target="_blank" rel="noopener noreferrer" className="text-purple-400 hover:text-purple-300 hover:underline flex items-center gap-1 truncate w-full">
                               <span className="truncate">{task.modelName}</span> <Download className="h-3 w-3 text-purple-500/70" />
                             </a>
                           ) : <span className="text-slate-300 truncate block w-full">{task.modelName}</span>}
                         </td>
+                        
+                        {/* 🔥 🚨 ВИВІД КОЛОРОВОГО БЕЙДЖА ПРІОРИТЕТУ */}
+                        <td className="p-4">
+                          <span className={`inline-flex items-center px-2.5 py-0.5 text-xs font-bold border rounded uppercase tracking-wide whitespace-nowrap ${getPriorityBadgeClass(task.priority)}`}>
+                            {getPriorityLabel(task.priority)}
+                          </span>
+                        </td>
+
                         <td className="p-4"><span className="px-2 py-0.5 text-xs font-semibold rounded bg-slate-950 text-purple-300 border border-purple-500/20">{task.materialType || '—'}</span></td>
                         <td className="p-4 text-slate-300">{task.requestedColor || '—'}</td>
                         <td className="p-4 text-center">
@@ -282,7 +316,7 @@ export const AdminDashboard: React.FC = () => {
                         </td>
                       </tr>
                     ))
-                  ) : <tr><td colSpan={7} className="p-8 text-center text-slate-500 italic text-xs">Дані відсутні.</td></tr>}
+                  ) : <tr><td colSpan={8} className="p-8 text-center text-slate-500 italic text-xs">Дані відсутні.</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -290,7 +324,7 @@ export const AdminDashboard: React.FC = () => {
         </div>
       )}
 
-      {/* ==================== ВКЛАДКА 2: ПРИНТЕРИ (АНАТОМІЧНО ПРАВИЛЬНА ВЕРСТКА БЕЗ БЛОКУВАННЯ) ==================== */}
+      {/* ==================== ВКЛАДКА 2: ПРИНТЕРИ ==================== */}
       {activeTab === 'printers' && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 animate-fadeIn">
           <div className="bg-slate-900 border border-slate-800 p-5 rounded-xl h-fit space-y-4">
@@ -322,62 +356,31 @@ export const AdminDashboard: React.FC = () => {
                 return (
                   <div key={p.id} className="relative flex flex-col pt-4">
                     
-                    {/* 🚨 ІЗОЛЬОВАНИЙ БАНЕР З КНОПКАМИ (z-30 та z-40 повністю виключають конфлікти кліку) */}
+                    {/* БАНЕР ШВИДКИХ ДІЙ */}
                     {isWaitingConfirm && (
                       <div className="absolute -top-4 left-2 right-2 z-30 bg-gradient-to-r from-amber-500 to-yellow-600 text-slate-950 text-xs font-bold px-3 py-2.5 rounded-xl shadow-2xl border border-yellow-400 flex flex-col gap-2 animate-bounce">
                         <div className="flex items-center gap-1.5 justify-between">
-                          <span className="flex items-center gap-1 uppercase tracking-wider text-[10px] text-slate-900 font-extrabold">
-                            <AlertTriangle className="h-3.5 w-3.5 fill-slate-900 text-amber-400 animate-pulse" /> Друк завершено!
-                          </span>
+                          <span className="flex items-center gap-1 uppercase tracking-wider text-[10px] text-slate-900 font-extrabold"><AlertTriangle className="h-3.5 w-3.5 fill-slate-900 text-amber-400 animate-pulse" /> Друк завершено!</span>
                           <span className="text-[9px] px-1.5 py-0.5 bg-slate-950/20 rounded font-mono text-slate-900 font-black">Контроль</span>
                         </div>
-                        <p className="text-[11px] font-mono font-bold truncate max-w-full text-slate-950/90 bg-slate-950/10 p-1 rounded">
-                          📄 {currentJob?.fileName || 'Локальний запуск (Бортова памʼять)'}
-                        </p>
+                        <p className="text-[11px] font-mono font-bold truncate max-w-full text-slate-950/90 bg-slate-950/10 p-1 rounded">📄 {currentJob?.fileName || 'Локальний запуск (Бортова памʼять)'}</p>
                         
                         <div className="grid grid-cols-2 gap-2 pt-0.5 relative z-40">
                           {currentJob && currentJob.id && !currentJob.id.startsWith('virtual-') ? (
                             <>
-                              {/* Реальні кнопки для офіційних замовлень */}
-                              <button 
-                                type="button"
-                                onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleConfirmJob(currentJob.id, true); }} 
-                                className="bg-slate-950 text-emerald-400 hover:bg-slate-900 py-2 px-2 rounded-lg font-black text-[10px] transition-all flex items-center justify-center gap-1 border border-emerald-500/20 shadow-md cursor-pointer active:scale-95"
-                              >
-                                ✔ Успішно
-                              </button>
-                              <button 
-                                type="button"
-                                onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleConfirmJob(currentJob.id, false); }} 
-                                className="bg-slate-950 text-red-400 hover:bg-slate-900 py-2 px-2 rounded-lg font-black text-[10px] transition-all flex items-center justify-center gap-1 border border-red-500/20 shadow-md cursor-pointer active:scale-95"
-                              >
-                                ✖ Брак
-                              </button>
+                              <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleConfirmJob(currentJob.id, true); }} className="bg-slate-950 text-emerald-400 hover:bg-slate-900 py-2 px-2 rounded-lg font-black text-[10px] transition-all flex items-center justify-center gap-1 border border-emerald-500/20 shadow-md cursor-pointer active:scale-95">✔ Успішно</button>
+                              <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleConfirmJob(currentJob.id, false); }} className="bg-slate-950 text-red-400 hover:bg-slate-900 py-2 px-2 rounded-lg font-black text-[10px] transition-all flex items-center justify-center gap-1 border border-red-500/20 shadow-md cursor-pointer active:scale-95">✖ Брак</button>
                             </>
                           ) : (
-                            // Кнопка для стороннього локального друку з флешки (Скидає принтер в Idle на бекенді)
-                            <button 
-                              type="button"
-                              onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleResetPrinterStatus(p.id); }} 
-                              className="bg-slate-950 text-amber-300 hover:bg-slate-900 py-2 px-2 rounded-lg font-black text-[10px] transition-all flex items-center justify-center gap-1 border border-amber-500/20 col-span-2 shadow-md cursor-pointer active:scale-95"
-                            >
-                              👍 Очистити стіл (Принтер вільний)
-                            </button>
+                            <button type="button" onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleResetPrinterStatus(p.id); }} className="bg-slate-950 text-amber-300 hover:bg-slate-900 py-2 px-2 rounded-lg font-black text-[10px] transition-all flex items-center justify-center gap-1 border border-amber-500/20 col-span-2 shadow-md cursor-pointer active:scale-95">👍 Очистити стіл (Принтер вільний)</button>
                           )}
                         </div>
                       </div>
                     )}
 
-                    {/* 🖨 КАРТКА ПРИНТЕРА (Тепер це Div, що повністю відкриває кліки на кнопки вище) */}
-                    <div 
-                      className={`p-4 bg-slate-950 border rounded-xl flex flex-col justify-between text-left transition-all w-full min-h-[110px] ${
-                        isWaitingConfirm ? 'border-amber-500 ring-2 ring-amber-500/20 shadow-[0_0_15px_rgba(245,158,11,0.15)] mt-6' : 'border-slate-800'
-                      }`}
-                    >
-                      <div 
-                        onClick={() => openPrinterDetails(p, currentJob)} 
-                        className="cursor-pointer hover:opacity-85 transition-opacity flex-1 flex flex-col justify-between"
-                      >
+                    {/* КАРТКА ПРИНТЕРА */}
+                    <div className={`p-4 bg-slate-950 border rounded-xl flex flex-col justify-between text-left transition-all w-full min-h-[110px] ${isWaitingConfirm ? 'border-amber-500 ring-2 ring-amber-500/20 shadow-[0_0_15px_rgba(245,158,11,0.15)] mt-6' : 'border-slate-800'}`}>
+                      <div onClick={() => openPrinterDetails(p, currentJob)} className="cursor-pointer hover:opacity-85 transition-opacity flex-1 flex flex-col justify-between">
                         <div>
                           <div className="flex items-center justify-between mb-1">
                             <span className="font-semibold text-sm text-slate-200">{p.name}</span>
@@ -423,7 +426,7 @@ export const AdminDashboard: React.FC = () => {
         </div>
       )}
 
-      {/* ==================== 🖨 ДИНАМІЧНИЙ МОНІТОР ПРИНТЕРА ==================== */}
+      {/* ДИНАМІЧНИЙ МОНІТОР ПРИНТЕРА */}
       {selectedPrinterJob && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fadeIn">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-xl shadow-2xl p-6 relative space-y-5">
@@ -483,9 +486,7 @@ export const AdminDashboard: React.FC = () => {
                     ))}
                   </div>
                 ) : (
-                  <div className="p-3.5 text-xs text-slate-500 bg-slate-950 border border-slate-850 rounded-xl italic">
-                    У черзі лабораторних замовлень немає відповідностей. Скрипт виводить поточні дані з терміналу MQTT.
-                  </div>
+                  <div className="p-3.5 text-xs text-slate-500 bg-slate-950 border border-slate-850 rounded-xl italic">У черзі лабораторних замовлень немає відповідностей. Скрипт виводить поточні дані з терміналу MQTT.</div>
                 )}
               </div>
             </div>

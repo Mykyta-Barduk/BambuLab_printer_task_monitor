@@ -69,7 +69,7 @@ export const UserDashboard: React.FC<UserDashboardProps> = ({ userEmail }) => {
           <p className="text-xs text-slate-400 mt-0.5">Відстеження друку деталей</p>
         </div>
         
-        {/* 🔥 КНОПКА ДЛЯ НОВОГО ЗАМОВЛЕННЯ */}
+        {/* КНОПКА ДЛЯ НОВОГО ЗАМОВЛЕННЯ */}
         <a 
           href={googleFormLink}
           target="_blank"
