@@ -33,29 +33,41 @@ model Spool {
 
 // 3. ТАБЛИЦЯ ПРИНТЕРІВ
 model Printer {
-  id             String      @id // Серійник принтера
+  id             String     @id // Серійник принтера
   name           String
   model          String
-  status         String      @default("idle")
+  status         String     @default("idle")
   
+  progress       Int        @default(0)    // Відсоток друку (0-100)
+  remainingMins  Int        @default(0)    // Скільки хвилин залишилось
+  nozzleTemp     Int        @default(0)    // Поточна температура сопла
+  bedTemp        Int        @default(0)    // Поточна температура столу
+
   currentSpoolId String?
-  currentSpool   Spool?      @relation(fields: [currentSpoolId], references: [id], onDelete: SetNull)
+  currentSpool   Spool?     @relation(fields: [currentSpoolId], references: [id], onDelete: SetNull)
   
-  printJobs      PrintJob[]  // Зв'язок: принтер має історію фізичних запусків (збірок)
+  printJobs      PrintJob[] // Зв'язок: принтер має історію фізичних запусків
 }
 
 // 4. ТАБЛИЦЯ ЗБІРОК (Один фізичний запуск друку, який ловить MQTT)
 model PrintJob {
-  id          String      @id @default(cuid()) // Унікальний ID для кожної сесії друку
-  fileName    String      // Назва файлу/завдання, яку зловив MQTT (наприклад "123" або "part1+part2")
-  status      String      @default("printing") // printing, finished, failed
-  startedAt   DateTime    @default(now())
-  finishedAt  DateTime?
+  id            String      @id @default(cuid()) // Унікальний ID сесії друку
+  fileName      String      // Назва файлу/завдання з MQTT
+  status        String      @default("printing") // printing, waiting_confirmation, finished, failed
+  
+  // 🔥 ДОДАНІ ПОЛЯ ДЛЯ ДИНАМІЧНОЇ ТЕЛЕМЕТРІЇ:
+  progress      Int         @default(0)    // Поточний відсоток з Bambu Lab
+  remainingMins Int         @default(0)    // Залишок часу у хвилинах
+  nozzleTemp    Int         @default(0)
+  bedTemp       Int         @default(0)
 
-  printerId   String
-  printer     Printer     @relation(fields: [printerId], references: [id])
+  startedAt     DateTime    @default(now())
+  finishedAt    DateTime?
 
-  printTasks  PrintTask[] // Зв'язок: до однієї збірки на столі адмін може прив'язати багато тасок
+  printerId     String
+  printer       Printer     @relation(fields: [printerId], references: [id])
+
+  printTasks    PrintTask[] // Зв'язок із чергою тасок
 }
 
 // 5. ТАБЛИЦЯ ЧЕРГИ ЗАДАНЬ (Модернізована під нову архітектуру)

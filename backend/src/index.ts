@@ -1,14 +1,15 @@
 // backend/src/index.ts
+import cors from 'cors';
 import express, { Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import dotenv from 'dotenv';
 import { startBambuMonitor } from './services/bambu.service';
 
-
 // Завантажуємо змінні з файлу .env
 dotenv.config();
 
 const app = express();
+app.use(cors()); // Дозволяє фронтенду спілкуватися з API
 const prisma = new PrismaClient();
 const PORT = process.env.PORT || 5000;
 
@@ -25,7 +26,7 @@ app.get('/api/health', (req: Request, res: Response) => {
 // 2. Отримання всіх принтерів (тест зв'язку з БД)
 app.get('/api/printers', async (req: Request, res: Response) => {
   try {
-    // Включаємо у вибірку дані про заправлену котушку (currentSpool)
+    // Включаємо у вивибірку дані про заправлену котушку (currentSpool)
     const printers = await prisma.printer.findMany({
       include: { currentSpool: true }
     });
@@ -36,14 +37,14 @@ app.get('/api/printers', async (req: Request, res: Response) => {
   }
 });
 
-// 3. ПРИЙОМ ЗАМОВЛЕНЬ З GOOGLE ФОРМИ (Webhook)
+// 3. ПРИЙОМ ЗАМОВЛЕНЬ З GOOGLE ФОРМИ (Webhook) - Оновлений під нову схему БД
 app.post('/api/tasks/google-webhook', async (req: Request, res: Response) => {
   try {
     const { 
       modelName, 
       userEmail, 
       priority, 
-      materialType,    // 🔥 Додали деструктуризацію матеріалу
+      materialType,    
       requestedColor, 
       quantity, 
       comment, 
@@ -51,25 +52,39 @@ app.post('/api/tasks/google-webhook', async (req: Request, res: Response) => {
       gdriveFolderLink 
     } = req.body;
 
-    // Валідація
+    // Валідація обов'язкових полів
     if (!modelName || !userEmail) {
       res.status(400).json({ error: 'Пропущено обовʼязкові поля: modelName або userEmail' });
       return;
     }
 
-    // Оновлений інформативний лог — тепер видно і матеріал з кольором
-    console.log(`📥 Webhook: Нове замовлення "${modelName}" x${quantity || 1}шт. [Пріоритет: ${priority || 'MEDIUM'}] [Матеріал: ${materialType || 'PLA'}] від ${userEmail}`);
+    console.log(`📥 Webhook: Нове замовлення "${modelName}" x${quantity || 1}шт. від ${userEmail}`);
+
+    // 1. АВТОМАТИЧНЕ СТВОРЕННЯ КОРИСТУВАЧА (якщо його ще немає в базі)
+    let user = await prisma.user.findUnique({
+      where: { email: userEmail }
+    });
+
+    if (!user) {
+      user = await prisma.user.create({
+        data: {
+          email: userEmail,
+          role: 'CUSTOMER' // Усі нові користувачі з форми за замовчуванням клієнти
+        }
+      });
+      console.log(`👤 БД: Створено нового користувача для пошти ${userEmail}`);
+    }
 
     const username = userEmail.split('@')[0];
 
-    // Записуємо в базу з урахуванням матеріалу
+    // 2. ЗАПИС ЗАДАЧІ В БАЗУ (з прив'язкою до userEmail)
     const newTask = await prisma.printTask.create({
       data: {
         modelName,
-        userEmail,
+        userEmail: user.email, // Прив'язуємо до пошти існуючого або створеного юзера
         username,
         priority: priority || 'MEDIUM',
-        materialType: materialType || 'PLA', // 🔥 Записуємо матеріал в базу
+        materialType: materialType || 'PLA', 
         requestedColor: requestedColor || 'Any',
         quantity: quantity ? Number(quantity) : 1, 
         comment: comment || null,
@@ -105,7 +120,6 @@ app.get('/api/tasks', async (req: Request, res: Response) => {
 });
 
 // 5. ОНОВЛЕННЯ ПЛАСТИКУ В ПРИНТЕРІ (Для QR-сканера)
-// :id у посиланні — це динамічний параметр (серійник принтера)
 app.post('/api/printers/:id/spool', async (req: Request, res: Response) => {
   try {
     const printerId = req.params.id as string;
@@ -140,7 +154,7 @@ app.post('/api/printers/:id/spool', async (req: Request, res: Response) => {
     const updatedPrinter = await prisma.printer.update({
       where: { id: printerId },
       data: { currentSpoolId: spoolId },
-      include: { currentSpool: true } // одразу підтягуємо інфо про новий пластик
+      include: { currentSpool: true } // одразу підтягуємо інфо про новий plastic
     });
 
     console.log(`📸 QR-Сканер: Принтер [${printerId}] заправлено пластиком [${spoolId}] (${spoolExists.colorName})`);
@@ -236,6 +250,202 @@ app.post('/api/debug/simulate-print', async (req: Request, res: Response) => {
   }
 });
 
+
+// 🔥 7. АКТУАЛЬНИЙ МОНІТОРИНГ ДРУКУ (ОНОВЛЕНИЙ ПІД РЕАЛЬНУ ТЕЛЕМЕТРІЮ)
+app.get('/api/jobs/active', async (req: Request, res: Response) => {
+  try {
+    // 1. Витягуємо активні офіційні сесії друку
+    const activeJobs = await prisma.printJob.findMany({
+      where: { status: 'printing' },
+      include: { printTasks: true },
+    });
+
+    // 2. Витягуємо всі принтери
+    const allPrinters = await prisma.printer.findMany();
+
+    // 3. Звіряємо стан принтерів із чергою
+    for (const printer of allPrinters) {
+      const printerStatusLower = printer.status.toLowerCase();
+      
+      // Якщо MQTT каже, що принтер працює (напр. "printing" або "running")
+      if (printerStatusLower !== 'idle' && printerStatusLower !== 'free' && printerStatusLower !== 'offline') {
+        const hasJob = activeJobs.some(j => j.printerId.toLowerCase() === printer.id.toLowerCase());
+        
+        if (!hasJob) {
+          // Якщо в черзі немає офіційного завдання, створюємо віртуальну картку для локального друку
+          const lastJob = await prisma.printJob.findFirst({
+            where: { printerId: printer.id },
+            orderBy: { id: 'desc' },
+            include: { printTasks: true }
+          });
+
+          activeJobs.push({
+            id: lastJob?.id || `virtual-${printer.id}`,
+            printerId: printer.id,
+            fileName: lastJob?.fileName || "Локальний запуск (STEP/GCODE через Bambu Handy або SD-карту)",
+            status: 'printing',
+            // 🔥 Тепер беремо чисті динамічні дані, які MQTT-скрипт записав у модель Printer
+            progress: printer.progress, 
+            remainingMins: printer.remainingMins,
+            printTasks: lastJob?.printTasks || []
+          });
+        } else {
+          // Якщо офіційне замовлення є в activeJobs, оновлюємо його прогрес актуальними даними з принтера
+          const jobIndex = activeJobs.findIndex(j => j.printerId.toLowerCase() === printer.id.toLowerCase());
+          if (jobIndex !== -1) {
+            activeJobs[jobIndex].progress = printer.progress;
+            activeJobs[jobIndex].remainingMins = printer.remainingMins;
+          }
+        }
+      }
+    }
+
+    res.json(activeJobs);
+  } catch (error) {
+    console.error('Помилка ендпоінту /api/jobs/active:', error);
+    res.status(500).json({ error: 'Внутрішня помилка сервера' });
+  }
+});
+
+
+// 9. ПІДТВЕРДЖЕННЯ ДРУКУ АДМІНОМ (Зменшення кількості деталей)
+app.post('/api/jobs/:id/confirm', async (req: Request, res: Response) => {
+  try {
+    const jobId = req.params.id;
+    const { success } = req.body; // true — успішно, false — брак
+
+    // 1. Шукаємо цей Job та підтягуємо всі прив'язані до нього таски
+    const job = await prisma.printJob.findUnique({
+      where: { id: jobId },
+      include: { printTasks: true }
+    });
+
+    if (!job) {
+      res.status(404).json({ error: 'Таку сесію друку не знайдено в базі' });
+      return;
+    }
+
+    const finalJobStatus = success ? 'finished' : 'failed';
+
+    // 2. Оновлюємо базу через транзакцію
+    await prisma.$transaction(async (tx) => {
+      
+      // А) Закриваємо фізичний запуск на принтері
+      await tx.printJob.update({
+        where: { id: jobId },
+        data: { status: finalJobStatus, finishedAt: new Date() }
+      });
+
+      // Б) Проходимо по кожній тасці, що автоматично метчилась до цього друку
+      for (const task of job.printTasks) {
+        if (!success) {
+          // 🛑 Якщо БРАК: Повертаємо таску в чергу 'pending', кількість не чіпаємо
+          await tx.printTask.update({
+            where: { id: task.id },
+            data: { 
+              status: 'pending', 
+              printJobId: null // відв'язуємо від цього запуску
+            }
+          });
+        } else {
+          // ✅ Якщо УСПІШНО: Віднімаємо 1 деталь від загальної кількості в замовленні
+          const remainingQuantity = task.quantity - 1;
+          
+          // Якщо деталей більше не залишилось (рівно 0 або менше) — таска виконана повністю!
+          const isFullyFinished = remainingQuantity <= 0;
+
+          await tx.printTask.update({
+            where: { id: task.id },
+            data: {
+              quantity: isFullyFinished ? 0 : remainingQuantity, // зменшуємо залишок
+              status: isFullyFinished ? 'finished' : 'pending',   // якщо не 0 — повертаємо в чергу
+              printJobId: isFullyFinished ? task.printJobId : null, // відв'язуємо для наступних запусків, якщо не фініш
+              finishedAt: isFullyFinished ? new Date() : null
+            }
+          });
+        }
+      }
+    });
+
+    console.log(`👮‍♂️ Адмін валідував збірку [${jobId}]. Результат: ${finalJobStatus.toUpperCase()}`);
+    res.json({ success: true, message: 'Кількість деталей у замовленні оновлена!' });
+
+  } catch (error) {
+    console.error('Помилка при підтвердженні друку адміном:', error);
+    res.status(500).json({ error: 'Внутрішня ошибка сервера' });
+  }
+});
+
+
+// 10. БЕЗПАРОЛЬНИЙ ВХІД / РЕЄСТРАЦІЯ ЗА EMAIL
+app.post('/api/auth/login', async (req: Request, res: Response) => {
+  try {
+    const { email } = req.body;
+
+    if (!email || !email.includes('@')) {
+      res.status(400).json({ error: 'Введіть валідну електронну пошту' });
+      return;
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+
+    // Шукаємо користувача в базі
+    let user = await prisma.user.findUnique({
+      where: { email: cleanEmail }
+    });
+
+    // Якщо користувача немає — автоматично реєструємо його
+    if (!user) {
+      user = await prisma.user.create({
+        data: {
+          email: cleanEmail,
+          role: 'CUSTOMER' // Всі нові юзери з сайту — клієнти
+        }
+      });
+      console.log(`👤 БД (Сайт): Автоматично створено новий акаунт для ${cleanEmail}`);
+    }
+
+    // Повертаємо дані про користувача на фронтенд
+    res.json({
+      success: true,
+      user: {
+        id: user.id,
+        email: user.email,
+        role: user.role
+      }
+    });
+
+  } catch (error) {
+    console.error('Помилка при авторизації:', error);
+    res.status(500).json({ error: 'Внутрішня помилка сервера' });
+  }
+});
+
+
+
+// 11. ОТРИМАННЯ ТАСОК КОНКРЕТНОГО КОРИСТУВАЧА (Для кабінету юзера)
+app.get('/api/tasks/user/:email', async (req: Request, res: Response) => {
+  try {
+    const userEmail = req.params.email.trim().toLowerCase();
+
+    const userTasks = await prisma.printTask.findMany({
+      where: { userEmail: userEmail },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        printJob: {
+          include: {
+            printer: true // Підтягуємо дані про принтер через модель PrintJob
+          }
+        }
+      }
+    });
+
+    res.json(userTasks);
+  } catch (error) {
+    console.error('Помилка при отриманні тасок користувача:', error);
+    res.status(500).json({ error: 'Внутрішня помилка сервера' });
+  }
+});
 
 
 // Запуск сервера

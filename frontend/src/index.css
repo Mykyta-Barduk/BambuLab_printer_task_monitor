@@ -1,0 +1,10 @@
+@import "tailwindcss";
+
+/* У Tailwind v4 глобальні стилі для body пишуться ось так просто */
+body {
+  background-color: #020617; /* Колір slate-950 */
+  color: #f1f5f9;            /* Колір slate-100 */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}

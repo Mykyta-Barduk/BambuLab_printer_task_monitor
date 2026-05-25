@@ -12,6 +12,8 @@ import mqtt, { MqttClient } from 'mqtt';
 import * as fs from 'fs';
 import * as path from 'path';
 import { exec } from 'child_process';
+import { PrismaClient } from '@prisma/client';
+const prisma = new PrismaClient();
 
 // ─── ANSI кольори (без зовнішніх залежностей) ───────────────
 const C = {
@@ -92,6 +94,7 @@ interface PrinterState {
   lastReport?:    BambuReport;
   lastUpdateAt?:  Date;
   rawMessages:    number;
+  stlNames?:      string[];
 }
 
 // ─── ГЛОБАЛЬНИЙ СТАН ────────────────────────────────────────
@@ -132,6 +135,24 @@ function updateReport(oldReport: any, newReport: any): any {
   return result;
 }
 
+// Функція, яка бере довгий рядок від слайсера і розрізає його по плюсиках
+function parseNamesFromSubtask(subtaskName: string): string[] | null {
+  if (!subtaskName) return null;
+  
+  // Якщо в назві є щось типу "+ 9 others", цей метод не підійде
+  if (subtaskName.includes('others')) return null;
+
+  // Якщо є плюсик — розбиваємо рядок на окремі деталі
+  if (subtaskName.includes('+')) {
+    return subtaskName
+      .split('+')
+      .map(s => s.trim())          // Прибираємо зайві пробіли по краях
+      .filter(s => s.length > 0);  // Видаляємо порожні рядки, якщо вони є
+  }
+  
+  return null;
+}
+
 
 // ─── ПІДКЛЮЧЕННЯ ДО ПРИНТЕРА ────────────────────────────────
 function connectPrinter(cfg: PrinterConfig): MqttClient {
@@ -153,6 +174,23 @@ function connectPrinter(cfg: PrinterConfig): MqttClient {
     const state = states.get(cfg.serial)!;
     state.connected = true;
     log(`${C.green}✅ Підключено: ${cfg.name}${C.reset}`);
+
+    // 🔥 АВТО-РЕЄСТРАЦІЯ ПРИНТЕРА В БД (Фікс помилки Foreign key)
+    // upsert означає: якщо немає — створи, якщо є — онови
+    prisma.printer.upsert({
+      where: { id: cfg.serial },
+      update: { status: 'idle', name: cfg.name },
+      create: {
+        id: cfg.serial,     // Серійник як унікальний ID
+        name: cfg.name,
+        model: 'Bambu Lab', // Тимчасове ім'я моделі, адмін зможе змінити на сайті
+        status: 'idle'
+      }
+    }).then(() => {
+      log(`${C.dim}🔗 [DB] Принтер ${cfg.name} синхронізовано з базою даних.${C.reset}`);
+    }).catch(err => {
+      console.error(`\n${C.red}❌ [DB Error] Не вдалося зареєструвати принтер: ${err.message}${C.reset}`);
+    });
 
     // Підписуємось на репорти принтера
     const reportTopic = `device/${cfg.serial}/report`;
@@ -176,16 +214,147 @@ function connectPrinter(cfg: PrinterConfig): MqttClient {
       const data = JSON.parse(payload.toString());
 
       if (data.print) {
-        const incomingReport = data.print;
+        const incoming = data.print as BambuReport;
         
-        // ✅ ТЕПЕР МИ ЗЛИВАЄМО ДАНІ, А НЕ ПЕРЕЗАПИСУЄМО ЇХ
-        state.lastReport = updateReport(state.lastReport, incomingReport) as BambuReport;
+        // 🚨 1. ДЕТЕКЦІЯ СТАТУСІВ ДЛЯ БАЗИ ДАНИХ (Робимо ДО злиття станів)
+        const wasRunning = state.lastReport?.gcode_state === 'RUNNING';
+        const nowRunning = incoming.gcode_state === 'RUNNING';
+
+        // --- СТАРТ ДРУКУ (Автоматичний метчинг за назвою файлу) ---
+        if (nowRunning && !wasRunning) {
+          const subtaskName = incoming.subtask_name || state.lastReport?.subtask_name || 'Невідоме завдання';
+          const simpleNames = parseNamesFromSubtask(subtaskName) || [subtaskName];
+          state.stlNames = simpleNames;
+
+          prisma.printJob.create({
+            data: {
+              fileName: subtaskName,
+              status: 'printing',
+              printerId: cfg.serial,
+              progress: 0,
+              remainingMins: 0
+            }
+          }).then(async (job) => {
+            log(`${C.green}✅ [DB] Створено PrintJob: ${job.id}${C.reset}`);
+
+            // Також при старті друку відразу міняємо статус самого заліза в таблиці Printer
+            await prisma.printer.update({
+              where: { id: cfg.serial },
+              data: { status: 'printing', progress: 0, remainingMins: 0 }
+            }).catch(e => console.error("Помилка зміни статусу принтера при старті:", e.message));
+
+            for (const name of simpleNames) {
+              const cleanName = name.replace(/\.(?:stl|step|obj|gcode)/gi, '').trim();
+              if (cleanName.length < 2) continue;
+
+              await prisma.printTask.updateMany({
+                where: {
+                  status: 'pending',
+                  modelName: { contains: cleanName }
+                },
+                data: {
+                  printJobId: job.id,
+                  status: 'printing',
+                  startedAt: new Date()
+                }
+              });
+            }
+            log(`${C.cyan}🔄 [DB Match] Студентські таски для "${subtaskName}" автоматично переведені в режим друку!${C.reset}`);
+          }).catch(err => console.error(`\n${C.red}❌ [DB Error] Помилка старту друку: ${err.message}${C.reset}`));
+        }
+
+        // --- ФІНІШ ДРУКУ (Перехід у режим очікування перевірки адміном) ---
+        if ((incoming.gcode_state === 'FINISH' || incoming.gcode_state === 'FAILED') && state.lastReport?.gcode_state !== incoming.gcode_state) {
+          
+          prisma.printJob.findFirst({
+            where: { printerId: cfg.serial, status: 'printing' },
+            orderBy: { startedAt: 'desc' }
+          }).then(async (activeJob) => {
+            if (activeJob) {
+              await prisma.printJob.update({
+                where: { id: activeJob.id },
+                data: { status: 'waiting_confirmation', progress: 100, remainingMins: 0 }
+              });
+
+              // Переводимо залізо в стан контролю якості
+              await prisma.printer.update({
+                where: { id: cfg.serial },
+                data: { status: 'waiting_confirmation', progress: 100, remainingMins: 0 }
+              }).catch(e => {});
+
+              log(`${C.yellow}⏳ [DB] Друк завершено (${incoming.gcode_state}). Очікуємо підтвердження адміна на сайті.${C.reset}`);
+            }
+          }).catch(err => console.error(`\n${C.red}❌ [DB Error] Помилка фінішу друку: ${err.message}${C.reset}`));
+          
+          state.stlNames = [];
+        }
+
+        // 🚨 2. ЗЛИТТЯ СТАНІВ (Deep Merge)
+        state.lastReport = updateReport(state.lastReport, incoming) as BambuReport;
         
+        // 🚨 3. ОЧИЩЕННЯ АРТЕФАКТІВ ІНТЕРФЕЙСУ ТЕРМІНАЛУ
+        if (state.lastReport) {
+          const st = state.lastReport.gcode_state;
+          if (st === 'IDLE' || st === 'FINISH') {
+            state.lastReport.print_error = 0;      
+            state.lastReport.subtask_name = '';     
+            state.lastReport.mc_percent = 0;        
+            state.lastReport.mc_remaining_time = 0;
+
+            // Якщо принтер простоює — синхронізуємо бд, що він вільний
+            if (st === 'IDLE') {
+              prisma.printer.update({
+                where: { id: cfg.serial },
+                data: { status: 'idle', progress: 0, remainingMins: 0 }
+              }).catch(() => {});
+            }
+          }
+        }
+
+        // 🔥 🚨 4. ПОТОЧНИЙ РЕАЛ-ТАЙМ МОНІТОРИНГ ТЕЛЕМЕТРІЇ (Записуємо кожен пакет у БД)
+        if (state.lastReport && state.lastReport.gcode_state === 'RUNNING') {
+          const currentPercent = state.lastReport.mc_percent ?? 0;
+          const currentRemaining = state.lastReport.mc_remaining_time ?? 0;
+          const currentNozzle = state.lastReport.nozzle_temper ?? undefined;
+          const currentBed = state.lastReport.bed_temper ?? undefined;
+
+          // А) Оновлюємо залізо в таблиці Printer (щоб картка світилась синім і міняла %)
+          prisma.printer.update({
+            where: { id: cfg.serial },
+            data: {
+              status: 'printing',
+              progress: Number(currentPercent),
+              remainingMins: Number(currentRemaining),
+              // Якщо додавав температури у схему — Prisma їх проковтне:
+              ...(currentNozzle !== undefined && { nozzleTemp: Math.floor(currentNozzle) }),
+              ...(currentBed !== undefined && { bedTemp: Math.floor(currentBed) }),
+            }
+          }).catch(() => {});
+
+          // Б) Оновлюємо поточну сесію друку в таблиці PrintJob (щоб монітор у модалці крутився)
+          prisma.printJob.findFirst({
+            where: { printerId: cfg.serial, status: 'printing' },
+            orderBy: { startedAt: 'desc' }
+          }).then(async (activeJob) => {
+            if (activeJob) {
+              await prisma.printJob.update({
+                where: { id: activeJob.id },
+                data: {
+                  progress: Number(currentPercent),
+                  remainingMins: Number(currentRemaining),
+                  ...(currentNozzle !== undefined && { nozzleTemp: Math.floor(currentNozzle) }),
+                  ...(currentBed !== undefined && { bedTemp: Math.floor(currentBed) }),
+                }
+              }).catch(() => {});
+            }
+          }).catch(() => {});
+        }
+
         state.lastUpdateAt = new Date();
         renderDashboard();
       }
-    } catch {
-      // Іноді приходять невалідні пакети
+    } catch (e) {
+      // Ігноруємо невалідні бінарні пакети
     }
   });
 
