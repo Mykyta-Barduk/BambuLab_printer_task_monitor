@@ -250,65 +250,74 @@ app.post('/api/debug/simulate-print', async (req: Request, res: Response) => {
   }
 });
 
-
-// 🔥 7. АКТУАЛЬНИЙ МОНІТОРИНГ ДРУКУ (ОНОВЛЕНИЙ ПІД РЕАЛЬНУ ТЕЛЕМЕТРІЮ)
+// 🔥 7. АКТУАЛЬНИЙ МОНІТОРИНГ ДРУКУ (ВКЛЮЧАЮЧИ waiting_confirmation)
 app.get('/api/jobs/active', async (req: Request, res: Response) => {
   try {
-    // 1. Витягуємо активні офіційні сесії друку
-    const activeJobs = await prisma.printJob.findMany({
-      where: { status: 'printing' },
+    // Тепер витягуємо і ті, що друкуються, і ті, що чекають на твій контроль!
+    const realActiveJobs = await prisma.printJob.findMany({
+      where: { 
+        status: { in: ['printing', 'waiting_confirmation'] } 
+      },
       include: { printTasks: true },
+      orderBy: { startedAt: 'desc' }
     });
 
-    // 2. Витягуємо всі принтери
     const allPrinters = await prisma.printer.findMany();
+    const responseJobs: any[] = [];
+    const processedPrinterIds = new Set<string>();
 
-    // 3. Звіряємо стан принтерів із чергою
-    for (const printer of allPrinters) {
-      const printerStatusLower = printer.status.toLowerCase();
-      
-      // Якщо MQTT каже, що принтер працює (напр. "printing" або "running")
-      if (printerStatusLower !== 'idle' && printerStatusLower !== 'free' && printerStatusLower !== 'offline') {
-        const hasJob = activeJobs.some(j => j.printerId.toLowerCase() === printer.id.toLowerCase());
-        
-        if (!hasJob) {
-          // Якщо в черзі немає офіційного завдання, створюємо віртуальну картку для локального друку
-          const lastJob = await prisma.printJob.findFirst({
-            where: { printerId: printer.id },
-            orderBy: { id: 'desc' },
-            include: { printTasks: true }
-          });
-
-          activeJobs.push({
-            id: lastJob?.id || `virtual-${printer.id}`,
-            printerId: printer.id,
-            fileName: lastJob?.fileName || "Локальний запуск (STEP/GCODE через Bambu Handy або SD-карту)",
-            status: 'printing',
-            // 🔥 Тепер беремо чисті динамічні дані, які MQTT-скрипт записав у модель Printer
-            progress: printer.progress, 
-            remainingMins: printer.remainingMins,
-            printTasks: lastJob?.printTasks || []
-          });
-        } else {
-          // Якщо офіційне замовлення є в activeJobs, оновлюємо його прогрес актуальними даними з принтера
-          const jobIndex = activeJobs.findIndex(j => j.printerId.toLowerCase() === printer.id.toLowerCase());
-          if (jobIndex !== -1) {
-            activeJobs[jobIndex].progress = printer.progress;
-            activeJobs[jobIndex].remainingMins = printer.remainingMins;
-          }
-        }
+    // 1. Пушимо реальні сесії з бази
+    for (const job of realActiveJobs) {
+      const pIdLower = job.printerId.toLowerCase();
+      if (!processedPrinterIds.has(pIdLower)) {
+        responseJobs.push({
+          ...job,
+          progress: job.progress ?? 0,
+          remainingMins: job.remainingMins ?? 0
+        });
+        processedPrinterIds.add(pIdLower);
       }
     }
 
-    res.json(activeJobs);
+    // 2. Страховка для стороннього друку
+    for (const printer of allPrinters) {
+      const printerStatusLower = printer.status.toLowerCase();
+      const pIdLower = printer.id.toLowerCase();
+      
+      if (
+        printerStatusLower !== 'idle' && 
+        printerStatusLower !== 'free' && 
+        printerStatusLower !== 'offline' && 
+        !processedPrinterIds.has(pIdLower)
+      ) {
+        const lastJob = await prisma.printJob.findFirst({
+          where: { printerId: printer.id },
+          orderBy: { startedAt: 'desc' },
+          include: { printTasks: true }
+        });
+
+        responseJobs.push({
+          id: lastJob?.id || `virtual-${printer.id}`,
+          printerId: printer.id,
+          fileName: lastJob?.fileName || "Локальний запуск (GCODE з флешки)",
+          status: printer.status, // зберігаємо оригінальний статус заліза
+          progress: printer.progress ?? 0, 
+          remainingMins: printer.remainingMins ?? 0,
+          printTasks: lastJob?.printTasks || []
+        });
+
+        processedPrinterIds.add(pIdLower);
+      }
+    }
+
+    res.json(responseJobs);
   } catch (error) {
     console.error('Помилка ендпоінту /api/jobs/active:', error);
     res.status(500).json({ error: 'Внутрішня помилка сервера' });
   }
 });
 
-
-// 9. ПІДТВЕРДЖЕННЯ ДРУКУ АДМІНОМ (Зменшення кількості деталей)
+// 9. ПІДТВЕРДЖЕННЯ ДРУКУ АДМІНОМ (З ОЧИЩЕННЯМ СТАТУСУ ПРИНТЕРА В IDLE)
 app.post('/api/jobs/:id/confirm', async (req: Request, res: Response) => {
   try {
     const jobId = req.params.id;
@@ -336,7 +345,17 @@ app.post('/api/jobs/:id/confirm', async (req: Request, res: Response) => {
         data: { status: finalJobStatus, finishedAt: new Date() }
       });
 
-      // Б) Проходимо по кожній тасці, що автоматично метчилась до цього друку
+      // Б) 🔥 НАЙГОЛОВНІШЕ: Примусово переводимо саме залізо принтера в статус "idle" та обнуляємо прогрес!
+      await tx.printer.update({
+        where: { id: job.printerId },
+        data: { 
+          status: 'idle',
+          progress: 0,
+          remainingMins: 0
+        }
+      });
+
+      // В) Проходимо по кожній тасці, що автоматично метчилась до цього друку
       for (const task of job.printTasks) {
         if (!success) {
           // 🛑 Якщо БРАК: Повертаємо таску в чергу 'pending', кількість не чіпаємо
@@ -350,16 +369,14 @@ app.post('/api/jobs/:id/confirm', async (req: Request, res: Response) => {
         } else {
           // ✅ Якщо УСПІШНО: Віднімаємо 1 деталь від загальної кількості в замовленні
           const remainingQuantity = task.quantity - 1;
-          
-          // Якщо деталей більше не залишилось (рівно 0 або менше) — таска виконана повністю!
           const isFullyFinished = remainingQuantity <= 0;
 
           await tx.printTask.update({
             where: { id: task.id },
             data: {
-              quantity: isFullyFinished ? 0 : remainingQuantity, // зменшуємо залишок
-              status: isFullyFinished ? 'finished' : 'pending',   // якщо не 0 — повертаємо в чергу
-              printJobId: isFullyFinished ? task.printJobId : null, // відв'язуємо для наступних запусків, якщо не фініш
+              quantity: isFullyFinished ? 0 : remainingQuantity, 
+              status: isFullyFinished ? 'finished' : 'pending',   
+              printJobId: isFullyFinished ? task.printJobId : null, 
               finishedAt: isFullyFinished ? new Date() : null
             }
           });
@@ -367,12 +384,12 @@ app.post('/api/jobs/:id/confirm', async (req: Request, res: Response) => {
       }
     });
 
-    console.log(`👮‍♂️ Адмін валідував збірку [${jobId}]. Результат: ${finalJobStatus.toUpperCase()}`);
-    res.json({ success: true, message: 'Кількість деталей у замовленні оновлена!' });
+    console.log(`👮‍♂️ Адмін валідував збірку [${jobId}]. Результат: ${finalJobStatus.toUpperCase()}. Принтер [${job.printerId}] вільний!`);
+    res.json({ success: true, message: 'Статус принтера скинуто в IDLE, чергу оновлено!' });
 
   } catch (error) {
     console.error('Помилка при підтвердженні друку адміном:', error);
-    res.status(500).json({ error: 'Внутрішня ошибка сервера' });
+    res.status(500).json({ error: 'Внутрішня помилка сервера' });
   }
 });
 
