@@ -2,6 +2,8 @@
 import express, { Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
 import dotenv from 'dotenv';
+import { startBambuMonitor } from './services/bambu.service';
+
 
 // Завантажуємо змінні з файлу .env
 dotenv.config();
@@ -239,4 +241,9 @@ app.post('/api/debug/simulate-print', async (req: Request, res: Response) => {
 // Запуск сервера
 app.listen(PORT, () => {
   console.log(`🚀 Сервер запущенно на http://localhost:${PORT}`);
+  
+  // Запускаємо наш фоновий MQTT-монітор принтерів
+  startBambuMonitor().catch(err => {
+    console.error('Помилка при запуску Bambu Monitor:', err);
+  });
 });

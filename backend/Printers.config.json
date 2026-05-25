@@ -1,0 +1,14 @@
+{
+  "printers": [
+    {
+      "name":        "Splinter",
+      "serial":      "01P09A452201847",
+      "ip":          "10.5.143.101",
+      "accessCode":  "15266292"
+    }
+  ],
+
+  "_comment_serial":     "Серійний номер: на екрані принтера Settings → Device → Serial Number",
+  "_comment_ip":         "IP принтера: Settings → Network → IP Address",
+  "_comment_accessCode": "Acc ess Code: Settings → Network → Access Code (8 символів)"
+}

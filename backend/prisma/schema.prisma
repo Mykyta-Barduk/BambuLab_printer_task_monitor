@@ -9,44 +9,74 @@ generator client {
   provider = "prisma-client-js"
 }
 
-// 1. ТАБЛИЦЯ КОТУШОК ПЛАСТИКУ
+// 1. ТАБЛИЦЯ КОРИСТУВАЧІВ (Адміни та Студенти)
+model User {
+  id        Int         @id @default(autoincrement())
+  email     String      @unique // Логін без пароля (сюди залітає email з Google Форми)
+  role      String      @default("CUSTOMER") // "CUSTOMER" або "ADMIN"
+  createdAt DateTime    @default(now())
+  
+  printTasks PrintTask[] // Зв'язок: один користувач може мати багато замовлень
+}
+
+// 2. ТАБЛИЦЯ КОТУШОК ПЛАСТИКУ (Твоя оригінальна логіка)
 model Spool {
-  id               String   @id
+  id               String    @id
   materialType     String
   colorName        String
   colorHex         String
   totalWeightG     Int
   remainingWeightG Int
-  createdAt        DateTime @default(now())
+  createdAt        DateTime  @default(now())
   printers         Printer[]
 }
 
-// 2. ТАБЛИЦЯ ПРИНТЕРІВ
+// 3. ТАБЛИЦЯ ПРИНТЕРІВ
 model Printer {
-  id             String      @id
+  id             String      @id // Серійник принтера
   name           String
   model          String
   status         String      @default("idle")
+  
   currentSpoolId String?
   currentSpool   Spool?      @relation(fields: [currentSpoolId], references: [id], onDelete: SetNull)
-  printTasks     PrintTask[]
+  
+  printJobs      PrintJob[]  // Зв'язок: принтер має історію фізичних запусків (збірок)
 }
 
-// 3. ТАБЛИЦЯ ЧЕРГИ ЗАДАНЬ
+// 4. ТАБЛИЦЯ ЗБІРОК (Один фізичний запуск друку, який ловить MQTT)
+model PrintJob {
+  id          String      @id @default(cuid()) // Унікальний ID для кожної сесії друку
+  fileName    String      // Назва файлу/завдання, яку зловив MQTT (наприклад "123" або "part1+part2")
+  status      String      @default("printing") // printing, finished, failed
+  startedAt   DateTime    @default(now())
+  finishedAt  DateTime?
+
+  printerId   String
+  printer     Printer     @relation(fields: [printerId], references: [id])
+
+  printTasks  PrintTask[] // Зв'язок: до однієї збірки на столі адмін може прив'язати багато тасок
+}
+
+// 5. ТАБЛИЦЯ ЧЕРГИ ЗАДАНЬ (Модернізована під нову архітектуру)
 model PrintTask {
   id                Int       @id @default(autoincrement())
   modelName         String    // Ім'я файлу з Google Диску
+  
+  // Зв'язуємо таску з таблицею User через email
   userEmail         String
-  username          String
-  priority          String    @default("MEDIUM") // Сюди залітатиме LOW, MEDIUM або HIGH
-  materialType      String    @default("PLA")    // 🔥 ДОДАЛИ ЦЕ ПОЛЕ (PLA, PETG, ABS...)
-  requestedColor    String    @default("Any")    // Колір (Білий, Чорний...)
-  quantity          Int       @default(1)        // Кількість штук
-  comment           String?                      // Хотілки замовника
+  user              User      @relation(fields: [userEmail], references: [email])
+  username          String    // Чисте ім'я до знаку @
+  
+  priority          String    @default("MEDIUM") // LOW, MEDIUM, HIGH
+  materialType      String    @default("PLA")    // PLA, PETG, ABS...
+  requestedColor    String    @default("Any")    
+  quantity          Int       @default(1)        
+  comment           String?                      
   gdriveFileLink    String?   
   gdriveFolderLink  String?   
 
-  status            String    @default("pending")
+  status            String    @default("pending") // pending, printing, finished, failed
   estimatedWeightG  Float?
   totalDurationMins Int?
   startedAt         DateTime?
@@ -54,6 +84,7 @@ model PrintTask {
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
-  printerId         String?
-  printer           Printer?  @relation(fields: [printerId], references: [id])
+  // Замість прямої прив'язки до принтера, таска прив'язується до конкретної збірки на столі (PrintJob)
+  printJobId        String?
+  printJob          PrintJob? @relation(fields: [printJobId], references: [id], onDelete: SetNull)
 }
