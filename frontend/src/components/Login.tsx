@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import axios from 'axios';
+import { api } from './api';
 import { Mail, ShieldAlert, Lock } from 'lucide-react';
 
 interface LoginProps {
@@ -18,7 +18,7 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
     setLoading(true);
 
     try {
-      const response = await axios.post('http://localhost:5000/api/auth/login', { email });
+      const response = await api.post('/api/auth/login', { email });
 
       if (response.data.success) {
         const userData = response.data.user;
