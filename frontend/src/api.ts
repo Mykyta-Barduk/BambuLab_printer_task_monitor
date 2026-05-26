@@ -1,11 +1,14 @@
 import axios from 'axios';
 
 const isProd = window.location.hostname !== 'localhost';
+const baseURL = isProd 
+    ? 'https://safely-hurling-polyester.ngrok-free.app'
+    : 'http://localhost:5000';
+
+console.log('API baseURL:', baseURL); // ← тимчасово
 
 export const api = axios.create({
-  baseURL: isProd 
-    ? 'https://safely-hurling-polyester.ngrok-free.app'
-    : 'http://localhost:5000',
+  baseURL,
   headers: {
     'ngrok-skip-browser-warning': 'true',
   },
