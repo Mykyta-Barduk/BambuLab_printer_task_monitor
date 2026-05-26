@@ -55,10 +55,10 @@ export const AdminDashboard: React.FC = () => {
   const fetchData = async () => {
     try {
       const [jobsRes, tasksRes, printersRes] = await Promise.all([
-        axios.get('http://localhost:5000/api/jobs/active').catch(() => ({ data: [] })),
-        axios.get('http://localhost:5000/api/tasks').catch(() => ({ data: [] })),
-        axios.get('http://localhost:5000/api/printers').catch(() => ({ data: [] }))
-      ]);
+      axios.get(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/jobs/active`).catch(() => ({ data: [] })),
+      axios.get(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/tasks`).catch(() => ({ data: [] })),
+      axios.get(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/printers`).catch(() => ({ data: [] }))
+    ]);
       
       const currentJobs: PrintJob[] = Array.isArray(jobsRes.data) ? jobsRes.data : [];
       setActiveJobs(currentJobs);
@@ -110,7 +110,7 @@ export const AdminDashboard: React.FC = () => {
         return;
       }
 
-      const res = await axios.post(`http://localhost:5000/api/jobs/${jobId}/confirm`, { success });
+      const res = await axios.post(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/jobs/${jobId}/confirm`, { success });
       if (res.data.success) {
         setSelectedPrinterJob(null);
         fetchData();
@@ -123,7 +123,7 @@ export const AdminDashboard: React.FC = () => {
 
   const handleResetPrinterStatus = async (printerId: string) => {
     try {
-      await axios.post(`http://localhost:5000/api/printers/${printerId}/reset`);
+      await axios.post(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/printers/${printerId}/reset`);
       alert('Статус принтера успішно скинуто в IDLE!');
       fetchData();
     } catch (err) {
@@ -136,7 +136,7 @@ export const AdminDashboard: React.FC = () => {
     e.preventDefault();
     if (!newPrinterSerial || !newPrinterName) return;
     try {
-      await axios.post('http://localhost:5000/api/printers', {
+      await axios.post(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/printers`, {
         id: newPrinterSerial.trim(),
         name: newPrinterName.trim(),
         model: 'Bambu Lab',
