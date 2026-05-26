@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { Layers, Clock, CheckCircle2, RefreshCw, Box, ExternalLink } from 'lucide-react';
+import { Clock, CheckCircle2, RefreshCw, Box, ExternalLink } from 'lucide-react';
 
 interface UserDashboardProps {
   userEmail: string;
