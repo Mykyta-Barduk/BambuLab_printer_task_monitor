@@ -28,9 +28,9 @@ export const UserDashboard: React.FC<UserDashboardProps> = ({ userEmail }) => {
   // Сюди встав реальне посилання на твою Google Форму SmartFarm
   const googleFormLink = "https://docs.google.com/forms/d/e/1FAIpQLSfOhQCqQce84D89NBYzqtQzedxCT2-9Ob6LAon5r58L8F6Tqw/viewform";
 
-  const fetchUserTasks = async () => {
+ const fetchUserTasks = async () => {
     try {
-      const response = await axios.get(`http://localhost:5000/api/tasks/user/${encodeURIComponent(userEmail)}`);
+      const response = await axios.get(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/tasks/user/${encodeURIComponent(userEmail)}`);
       setMyTasks(Array.isArray(response.data) ? response.data : []);
     } catch (err) {
       console.error('Помилка завантаження замовлень:', err);

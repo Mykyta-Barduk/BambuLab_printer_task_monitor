@@ -1,9 +1,10 @@
 // backend/src/index.ts
 import cors from 'cors';
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import { PrismaClient } from '@prisma/client';
 import dotenv from 'dotenv';
 import { startBambuMonitor } from './services/bambu.service';
+
 
 // Завантажуємо змінні з файлу .env
 dotenv.config();
@@ -26,7 +27,7 @@ const PORT = process.env.PORT || 5000;
 app.use(express.json());
 
 // ФІКС ДЛЯ VERCEL: Обхід вікна попередження ngrok для всіх запитів API фронтенду
-app.use((req: Request, res: Response, next) => {
+app.use((req: Request, res: Response, next: NextFunction) => {
   res.setHeader('ngrok-skip-browser-warning', 'true');
   next();
 });
