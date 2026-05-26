@@ -359,7 +359,7 @@ export const AdminDashboard: React.FC = () => {
                 
                 const isWaitingConfirm = p.status === 'waiting_confirmation' || currentJob?.status === 'waiting_confirmation';
                 const isRealPrinting = !isWaitingConfirm && currentJob && currentJob.status === 'printing';
-                const showProgress = isRealPrinting && (p.progress !== undefined || currentJob?.progress !== undefined);
+               // const showProgress = isRealPrinting && (p.progress !== undefined || currentJob?.progress !== undefined);
                 const progressValue = p.progress ?? currentJob?.progress ?? 0;
                 
                 return (
