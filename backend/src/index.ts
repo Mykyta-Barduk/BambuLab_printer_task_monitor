@@ -9,12 +9,27 @@ import { startBambuMonitor } from './services/bambu.service';
 dotenv.config();
 
 const app = express();
-app.use(cors()); // Дозволяє фронтенду спілкуватися з API
+// Дозволяє фронтенду спілкуватися з API
+app.use(cors({
+  origin: [
+    'https://project-h71j8.vercel.app', 
+    'http://localhost:5173'
+  ],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+}));
 const prisma = new PrismaClient();
 const PORT = process.env.PORT || 5000;
 
 // Мідлвар для того, щоб сервер вмів читати JSON-дані в запитах
 app.use(express.json());
+
+// ФІКС ДЛЯ VERCEL: Обхід вікна попередження ngrok для всіх запитів API фронтенду
+app.use((req: Request, res: Response, next) => {
+  res.setHeader('ngrok-skip-browser-warning', 'true');
+  next();
+});
 
 // --- ТЕСТОВІ ЕНДПОІНТИ (API) ---
 
