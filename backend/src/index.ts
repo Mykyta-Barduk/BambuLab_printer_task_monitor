@@ -12,12 +12,20 @@ dotenv.config();
 const app = express();
 // Дозволяє фронтенду спілкуватися з API
 app.use(cors({
-  origin: [
-    'https://project-h71j8.vercel.app', 
-    'http://localhost:5173'
-  ],
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  origin: (origin, callback) => {
+    const allowed = [
+      'http://localhost:5173',
+      'https://project-h71j8.vercel.app',
+    ];
+    // Дозволяємо всі preview деплої Vercel
+    if (!origin || allowed.includes(origin) || origin.endsWith('.vercel.app')) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   allowedHeaders: ['Content-Type', 'Authorization', 'ngrok-skip-browser-warning'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   credentials: true
 }));
 

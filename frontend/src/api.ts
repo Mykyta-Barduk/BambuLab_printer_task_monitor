@@ -2,7 +2,7 @@ import axios from 'axios';
 
 const isProd = window.location.hostname !== 'localhost';
 const baseURL = isProd 
-    ? 'https://safely-hurling-polyester.ngrok-free.app'
+    ? 'https://safely-hurling-polyester.ngrok-free.dev'
     : 'http://localhost:5000';
 
 console.log('API baseURL:', baseURL); // ← тимчасово
