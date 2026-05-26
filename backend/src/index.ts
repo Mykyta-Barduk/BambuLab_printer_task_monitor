@@ -17,20 +17,16 @@ app.use(cors({
     'http://localhost:5173'
   ],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'ngrok-skip-browser-warning'],
   credentials: true
 }));
+
 const prisma = new PrismaClient();
 const PORT = process.env.PORT || 5000;
 
 // Мідлвар для того, щоб сервер вмів читати JSON-дані в запитах
 app.use(express.json());
 
-// ФІКС ДЛЯ VERCEL: Обхід вікна попередження ngrok для всіх запитів API фронтенду
-app.use((req: Request, res: Response, next: NextFunction) => {
-  res.setHeader('ngrok-skip-browser-warning', 'true');
-  next();
-});
 
 // --- ТЕСТОВІ ЕНДПОІНТИ (API) ---
 

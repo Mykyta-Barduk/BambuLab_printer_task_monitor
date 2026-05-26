@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+//import axios from 'axios';
+import { api } from '../api';
 import { CheckCircle2, XCircle, RefreshCw, Cpu, Layers, User, Plus, Sliders, MessageSquare, X, Download, Clock, AlertTriangle } from 'lucide-react';
 
 interface PrintTask {
@@ -55,9 +56,9 @@ export const AdminDashboard: React.FC = () => {
   const fetchData = async () => {
     try {
       const [jobsRes, tasksRes, printersRes] = await Promise.all([
-      axios.get(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/jobs/active`).catch(() => ({ data: [] })),
-      axios.get(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/tasks`).catch(() => ({ data: [] })),
-      axios.get(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/printers`).catch(() => ({ data: [] }))
+        api.get('/api/jobs/active').catch(() => ({ data: [] })),
+        api.get('/api/tasks').catch(() => ({ data: [] })),
+        api.get('/api/printers').catch(() => ({ data: [] }))
     ]);
       
       const currentJobs: PrintJob[] = Array.isArray(jobsRes.data) ? jobsRes.data : [];
@@ -110,7 +111,7 @@ export const AdminDashboard: React.FC = () => {
         return;
       }
 
-      const res = await axios.post(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/jobs/${jobId}/confirm`, { success });
+      const res = await api.post(`/api/jobs/${jobId}/confirm`, { success });
       if (res.data.success) {
         setSelectedPrinterJob(null);
         fetchData();
@@ -123,7 +124,7 @@ export const AdminDashboard: React.FC = () => {
 
   const handleResetPrinterStatus = async (printerId: string) => {
     try {
-      await axios.post(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/printers/${printerId}/reset`);
+      await api.post(`/api/printers/${printerId}/reset`);
       alert('Статус принтера успішно скинуто в IDLE!');
       fetchData();
     } catch (err) {
@@ -136,12 +137,12 @@ export const AdminDashboard: React.FC = () => {
     e.preventDefault();
     if (!newPrinterSerial || !newPrinterName) return;
     try {
-      await axios.post(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/printers`, {
-        id: newPrinterSerial.trim(),
-        name: newPrinterName.trim(),
-        model: 'Bambu Lab',
-        status: 'idle'
-      });
+        await api.post('/api/printers', {
+         id: newPrinterSerial.trim(),
+         name: newPrinterName.trim(),
+         model: 'Bambu Lab',
+         status: 'idle'
+        });
       setNewPrinterSerial('');
       setNewPrinterName('');
       fetchData();

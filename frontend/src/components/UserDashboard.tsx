@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+//import axios from 'axios';
+import { api } from '../api';
 import { Clock, CheckCircle2, RefreshCw, Box, ExternalLink } from 'lucide-react';
 
 interface UserDashboardProps {
@@ -30,7 +31,7 @@ export const UserDashboard: React.FC<UserDashboardProps> = ({ userEmail }) => {
 
  const fetchUserTasks = async () => {
     try {
-      const response = await axios.get(`${import.meta.env.VITE_API_URL || 'http://localhost:5000'}/api/tasks/user/${encodeURIComponent(userEmail)}`);
+      const response = await api.get(`/api/tasks/user/${encodeURIComponent(userEmail)}`);
       setMyTasks(Array.isArray(response.data) ? response.data : []);
     } catch (err) {
       console.error('Помилка завантаження замовлень:', err);
