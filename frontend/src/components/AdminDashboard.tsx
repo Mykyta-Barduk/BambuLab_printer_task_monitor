@@ -104,11 +104,20 @@ export const AdminDashboard: React.FC = () => {
 
   const handleConfirmJob = async (jobId: string, success: boolean) => {
     try {
-      await axios.post(`http://localhost:5000/api/jobs/${jobId}/confirm`, { success });
-      setSelectedPrinterJob(null);
-      fetchData();
+      // Перестраховка: якщо ID джоби порожній або віртуальний — це сторонній друк, відправляємо на чистий ресет
+      if (!jobId || jobId.startsWith('virtual-')) {
+        alert('Виявлено сторонній друк. Очищаємо стіл принтера...');
+        return;
+      }
+
+      const res = await axios.post(`http://localhost:5000/api/jobs/${jobId}/confirm`, { success });
+      if (res.data.success) {
+        setSelectedPrinterJob(null);
+        fetchData();
+      }
     } catch (err) {
-      alert('Помилка при підтвердженні друку');
+      console.error('Помилка валідації джоби:', err);
+      alert('Помилка при підтвердженні друку. Спробуйте очистити стіл через вкладку обладнання.');
     }
   };
 

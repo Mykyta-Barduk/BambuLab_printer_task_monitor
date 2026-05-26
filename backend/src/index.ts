@@ -26,7 +26,7 @@ app.get('/api/health', (req: Request, res: Response) => {
 // 2. Отримання всіх принтерів (тест зв'язку з БД)
 app.get('/api/printers', async (req: Request, res: Response) => {
   try {
-    // Включаємо у вивибірку дані про заправлену котушку (currentSpool)
+    // Включаємо у вибірку дані про заправлену котушку (currentSpool)
     const printers = await prisma.printer.findMany({
       include: { currentSpool: true }
     });
@@ -37,18 +37,18 @@ app.get('/api/printers', async (req: Request, res: Response) => {
   }
 });
 
-// 3. ПРИЙОМ ЗАМОВЛЕНЬ З GOOGLE ФОРМИ (Webhook) - Оновлений під нову схему БД
+// 3. ПРИЙОМ ЗАМОВЛЕНЬ З GOOGLE ФОРМИ (З ФІКСОМ МУЛЬТИЗАВАНТАЖЕННЯ ФАЙЛІВ)
 app.post('/api/tasks/google-webhook', async (req: Request, res: Response) => {
   try {
     const { 
-      modelName, 
+      modelName, // Сюди може прилетіти як "part1.STEP", так і "part1.STEP, part2.STEP"
       userEmail, 
       priority, 
       materialType,    
       requestedColor, 
       quantity, 
       comment, 
-      gdriveFileLink, 
+      gdriveFileLink, // Сюди теж прилітають посилання через кому, якщо файлів кілька
       gdriveFolderLink 
     } = req.body;
 
@@ -58,50 +58,71 @@ app.post('/api/tasks/google-webhook', async (req: Request, res: Response) => {
       return;
     }
 
-    console.log(`Webhook: Нове замовлення "${modelName}" x${quantity || 1}шт. від ${userEmail}`);
+    const cleanEmail = userEmail.trim().toLowerCase();
+    const username = cleanEmail.split('@')[0];
 
     // 1. АВТОМАТИЧНЕ СТВОРЕННЯ КОРИСТУВАЧА (якщо його ще немає в базі)
     let user = await prisma.user.findUnique({
-      where: { email: userEmail }
+      where: { email: cleanEmail }
     });
 
     if (!user) {
       user = await prisma.user.create({
         data: {
-          email: userEmail,
-          role: 'CUSTOMER' // Усі нові користувачі з форми за замовчуванням клієнти
+          email: cleanEmail,
+          role: 'CUSTOMER'
         }
       });
-      console.log(`👤 БД: Створено нового користувача для пошти ${userEmail}`);
+      console.log(`👤 БД: Створено нового користувача для пошти ${cleanEmail}`);
     }
 
-    const username = userEmail.split('@')[0];
+    // 2. 🔥 РОЗПАРСУЄМО МУЛЬТИЗАВАНТАЖЕННЯ (Пакетний друк деталей)
+    // Розділяємо назви моделей та лінки, якщо вони прийшли через кому
+    const rawModelNames = String(modelName).split(',');
+    const rawFileLinks = gdriveFileLink ? String(gdriveFileLink).split(',') : [];
 
-    // 2. ЗАПИС ЗАДАЧІ В БАЗУ (з прив'язкою до userEmail)
-    const newTask = await prisma.printTask.create({
-      data: {
-        modelName,
-        userEmail: user.email, // Прив'язуємо до пошти існуючого або створеного юзера
-        username,
-        priority: priority || 'MEDIUM',
-        materialType: materialType || 'PLA', 
-        requestedColor: requestedColor || 'Any',
-        quantity: quantity ? Number(quantity) : 1, 
-        comment: comment || null,
-        gdriveFileLink: gdriveFileLink || null,
-        gdriveFolderLink: gdriveFolderLink || null,
-        status: 'pending',
-      },
-    });
+    const createdTaskIds: number[] = [];
+
+    console.log(`📦 Webhook: Обробка пакета замовлення від ${cleanEmail}. Виявлено файлів: ${rawModelNames.length}`);
+
+    // 3. СТВОРЮЄМО ОКРЕМУ ТАСКУ ДЛЯ КОЖНОГО ФАЙЛА
+    for (let i = 0; i < rawModelNames.length; i++) {
+      const singleModelName = rawModelNames[i].trim();
+      if (!singleModelName) continue; // пропуск порожніх елементів, якщо десь закралася зайва кома
+
+      // Беремо відповідне посилання на файл (якщо лінків менше, ніж назв — підстраховуємось)
+      const singleFileLink = rawFileLinks[i] ? rawFileLinks[i].trim() : (rawFileLinks[0] ? rawFileLinks[0].trim() : null);
+
+      const newTask = await prisma.printTask.create({
+        data: {
+          modelName: singleModelName,
+          userEmail: user.email,
+          username,
+          priority: priority || 'MEDIUM',
+          materialType: materialType || 'PLA', 
+          requestedColor: requestedColor || 'Any',
+          // Кількість (quantity) копій застосовується до кожної моделі з пакету окремо
+          quantity: quantity ? Number(quantity) : 1, 
+          comment: comment || null,
+          gdriveFileLink: singleFileLink,
+          gdriveFolderLink: gdriveFolderLink || null,
+          status: 'pending',
+        },
+      });
+
+      createdTaskIds.push(newTask.id);
+      console.log(`  └─ 📄 Додано окрему таску ID ${newTask.id}: "${singleModelName}"`);
+    }
 
     res.status(201).json({
       success: true,
-      message: 'Замовлення успішно додано в чергу SmartFarm!',
-      taskId: newTask.id,
+      message: `Пакет успішно оброблено! Створено окремих задач: ${createdTaskIds.length}`,
+      taskIds: createdTaskIds,
     });
+
   } catch (error) {
-    console.error('Помилка при обробці вебхука Google:', error);
-    res.status(500).json({ error: 'Внутрішня помилка сервера при збереженні задачі' });
+    console.error('Помилка при обробці мультизавантаження з вебхука:', error);
+    res.status(500).json({ error: 'Внутрішня помилка сервера при збереженні пакета задач' });
   }
 });
 
@@ -166,11 +187,10 @@ app.post('/api/printers/:id/spool', async (req: Request, res: Response) => {
     });
 
   } catch (error) {
-    console.error('Помилка при оновленні пластику через QR:', error);
+    console.error('Помилка при оновленні plastic через QR:', error);
     res.status(500).json({ error: 'Внутрішня помилка сервера' });
   }
 });
-
 
 // 6. СИМУЛЯТОР ДРУКУ (Для дебагу та тестів логіки складу)
 app.post('/api/debug/simulate-print', async (req: Request, res: Response) => {
@@ -214,7 +234,6 @@ app.post('/api/debug/simulate-print', async (req: Request, res: Response) => {
     const weightToSubtract = Number(estimatedWeightG);
     const newRemainingWeight = printer.currentSpool.remainingWeightG - weightToSubtract;
 
-    // Виконуємо оновлення паралельно через $transaction
     await prisma.$transaction([
       // Оновлюємо статус задачі
       prisma.printTask.update({
@@ -223,7 +242,7 @@ app.post('/api/debug/simulate-print', async (req: Request, res: Response) => {
           status: 'finished', // Одразу симулюємо успішне завершення
           printerId: printer.id,
           estimatedWeightG: weightToSubtract,
-          totalDurationMins: Math.floor(weightToSubtract * 1.5), // Фейковий розрахунок часу друку
+          totalDurationMins: Math.floor(weightToSubtract * 1.5), 
           startedAt: new Date(),
           finishedAt: new Date()
         }
@@ -250,63 +269,49 @@ app.post('/api/debug/simulate-print', async (req: Request, res: Response) => {
   }
 });
 
-// 7. АКТУАЛЬНИЙ МОНІТОРИНГ ДРУКУ (ВКЛЮЧАЮЧИ waiting_confirmation)
+// 🔥 7. АКТУАЛЬНИЙ МОНІТОРИНГ ДРУКУ (З ІЗОЛЯЦІЄЮ СТАТУСІВ ТА ПІДСТРАХОВКОЮ ЧЕРГИ)
 app.get('/api/jobs/active', async (req: Request, res: Response) => {
   try {
-    // Тепер витягуємо і ті, що друкуються, і ті, що чекають на твій контроль!
-    const realActiveJobs = await prisma.printJob.findMany({
-      where: { 
-        status: { in: ['printing', 'waiting_confirmation'] } 
-      },
-      include: { printTasks: true },
-      orderBy: { startedAt: 'desc' }
-    });
-
     const allPrinters = await prisma.printer.findMany();
     const responseJobs: any[] = [];
-    const processedPrinterIds = new Set<string>();
 
-    // 1. Пушимо реальні сесії з бази
-    for (const job of realActiveJobs) {
-      const pIdLower = job.printerId.toLowerCase();
-      if (!processedPrinterIds.has(pIdLower)) {
-        responseJobs.push({
-          ...job,
-          progress: job.progress ?? 0,
-          remainingMins: job.remainingMins ?? 0
-        });
-        processedPrinterIds.add(pIdLower);
-      }
-    }
-
-    // 2. Страховка для стороннього друку
+    // Проходимо по кожному принтеру і формуємо єдиний чистий стейт для фронтенду
     for (const printer of allPrinters) {
       const printerStatusLower = printer.status.toLowerCase();
-      const pIdLower = printer.id.toLowerCase();
       
-      if (
-        printerStatusLower !== 'idle' && 
-        printerStatusLower !== 'free' && 
-        printerStatusLower !== 'offline' && 
-        !processedPrinterIds.has(pIdLower)
-      ) {
-        const lastJob = await prisma.printJob.findFirst({
-          where: { printerId: printer.id },
-          orderBy: { startedAt: 'desc' },
-          include: { printTasks: true }
-        });
+      // Якщо принтер вільний у базі — він не повинен виводити застарілі хвости процесів друку
+      if (printerStatusLower === 'idle' || printerStatusLower === 'free' || printerStatusLower === 'offline') {
+        continue;
+      }
 
+      // Шукаємо НАЙНОВІШУ активну або завершену сесію цього принтера з бази
+      const lastJob = await prisma.printJob.findFirst({
+        where: { printerId: printer.id },
+        orderBy: { startedAt: 'desc' }, 
+        include: { printTasks: true }
+      });
+
+      if (lastJob) {
         responseJobs.push({
-          id: lastJob?.id || `virtual-${printer.id}`,
+          id: lastJob.id,
           printerId: printer.id,
-          fileName: lastJob?.fileName || "Локальний запуск (GCODE з флешки)",
-          status: printer.status, // зберігаємо оригінальний статус заліза
-          progress: printer.progress ?? 0, 
-          remainingMins: printer.remainingMins ?? 0,
-          printTasks: lastJob?.printTasks || []
+          fileName: lastJob.fileName || "Локальний запуск (GCODE)",
+          status: printer.status, // Живий актуальний стан заліза
+          progress: printer.progress ?? lastJob.progress ?? 0,
+          remainingMins: printer.remainingMins ?? lastJob.remainingMins ?? 0,
+          printTasks: lastJob.printTasks || []
         });
-
-        processedPrinterIds.add(pIdLower);
+      } else {
+        // Страховка для стороннього запуску на випадок збоїв ініціалізації джоби
+        responseJobs.push({
+          id: `virtual-${printer.id}`,
+          printerId: printer.id,
+          fileName: "Локальний запуск (STEP/GCODE через Bambu Handy або SD-карту)",
+          status: printer.status,
+          progress: printer.progress ?? 0,
+          remainingMins: printer.remainingMins ?? 0,
+          printTasks: []
+        });
       }
     }
 
@@ -317,82 +322,150 @@ app.get('/api/jobs/active', async (req: Request, res: Response) => {
   }
 });
 
-// 9. ПІДТВЕРДЖЕННЯ ДРУКУ АДМІНОМ (З ОЧИЩЕННЯМ СТАТУСУ ПРИНТЕРА В IDLE)
+// 🔥 7.5 ПРИМУСОВЕ СКИДАННЯ ПРИНТЕРА ТА ЗМЕТАННЯ ЗАВИСЛИХ ДУБЛІВ
+app.post('/api/printers/:id/reset', async (req: Request, res: Response) => {
+  try {
+    const printerId = req.params.id;
+    console.log(`🧹 Очищення залізяки: Принтер [${printerId}] примусово переводиться в IDLE...`);
+
+    await prisma.$transaction([
+      // А) Обнуляємо залізо принтера
+      prisma.printer.update({
+        where: { id: printerId },
+        data: { 
+          status: 'idle', 
+          progress: 0, 
+          remainingMins: 0 
+        }
+      }),
+      // Б) Вимітаємо абсолютно ВСІ активні сесії для цього принтера зі статусом printing/waiting
+      prisma.printJob.updateMany({
+        where: { 
+          printerId: printerId, 
+          status: { in: ['printing', 'waiting_confirmation'] }
+        },
+        data: { 
+          status: 'finished', 
+          finishedAt: new Date() 
+        }
+      })
+    ]);
+
+    res.json({ success: true, message: 'Принтер та всі повʼязані процеси успішно очищені в базі!' });
+  } catch (error) {
+    console.error('Помилка при тотальному скиданні принтера:', error);
+    res.status(500).json({ error: 'Помилка сервера при очищенні принтера' });
+  }
+});
+
+// 🔥 9. СУПЕР-РОУТ: ПІДТВЕРДЖЕННЯ, АВТО-СПИСАННЯ ДЕТАЛЕЙ ТА ТОТАЛЬНА ЗАЧИСТКА СПУЛУ
 app.post('/api/jobs/:id/confirm', async (req: Request, res: Response) => {
   try {
     const jobId = req.params.id;
     const { success } = req.body; // true — успішно, false — брак
 
-    // 1. Шукаємо цей Job та підтягуємо всі прив'язані до нього таски
-    const job = await prisma.printJob.findUnique({
+    // 1. Шукаємо джобу та підтягуємо прив'язані до неї таски черги замовлень
+    const currentJob = await prisma.printJob.findUnique({
       where: { id: jobId },
       include: { printTasks: true }
     });
 
-    if (!job) {
+    if (!currentJob) {
       res.status(404).json({ error: 'Таку сесію друку не знайдено в базі' });
       return;
     }
 
-    const finalJobStatus = success ? 'finished' : 'failed';
+    const printerId = currentJob.printerId;
+    const finalTaskStatus = success ? 'finished' : 'pending';
+    const transactionOperations: any[] = [];
 
-    // 2. Оновлюємо базу через транзакцію
-    await prisma.$transaction(async (tx) => {
-      
-      // А) Закриваємо фізичний запуск на принтері
-      await tx.printJob.update({
+    console.log(`🧹 [Confirm Service] Робота з джобою ${jobId}. Результат: ${success ? 'УСПІШНО' : 'БРАК'}. Принтер: [${printerId}]`);
+
+    // --- А) ЛОГІКА ОБЛІКУ ТА СПИСАННЯ ДЕТАЛЕЙ З ЧЕРГИ ЗАМОВЛЕНЬ ---
+    if (currentJob.printTasks && currentJob.printTasks.length > 0) {
+      for (const task of currentJob.printTasks) {
+        if (success) {
+          // Якщо друк УСПІШНИЙ: віднімаємо 1 деталь від поточного замовлення студента
+          const remainingQuantity = task.quantity - 1;
+          const isFullyFinished = remainingQuantity <= 0;
+
+          console.log(`📦 Списання готової деталі: таска ID ${task.id} (${task.modelName}). Залишилось: ${remainingQuantity} шт.`);
+          
+          transactionOperations.push(
+            prisma.printTask.update({
+              where: { id: task.id },
+              data: {
+                quantity: isFullyFinished ? 0 : remainingQuantity, 
+                status: isFullyFinished ? 'finished' : 'pending',   
+                printJobId: isFullyFinished ? task.printJobId : null, 
+                finishedAt: isFullyFinished ? new Date() : null
+              }
+            })
+          );
+        } else {
+          // Якщо БРАК: повністю відв'язуємо таску від цієї джоби і повертаємо її в чергу на передрук
+          console.log(`🚨 Брак деталей: таска ID ${task.id} повертається в чергу на інший запуск.`);
+          transactionOperations.push(
+            prisma.printTask.update({
+              where: { id: task.id },
+              data: { 
+                status: 'pending', 
+                printJobId: null,
+                startedAt: null
+              }
+            })
+          );
+        }
+      }
+    }
+
+    // --- Б) ЛОГІКА ТОТАЛЬНОГО ВИМІТАННЯ СПУЛУ ТА ДУБЛІКАТІВ ---
+    // Закриваємо поточну джобу
+    transactionOperations.push(
+      prisma.printJob.update({
         where: { id: jobId },
-        data: { status: finalJobStatus, finishedAt: new Date() }
-      });
+        data: { status: 'finished', finishedAt: new Date() }
+      })
+    );
 
-      // Б)  Примусово переводимо саме залізо принтера в статус "idle" та обнуляємо прогрес!
-      await tx.printer.update({
-        where: { id: job.printerId },
+    // Змітаємо будь-які інші застряглі/наплоджені сесії цього принтера в архів finished
+    transactionOperations.push(
+      prisma.printJob.updateMany({
+        where: {
+          printerId: printerId,
+          status: { in: ['printing', 'waiting_confirmation'] },
+          id: { not: jobId }
+        },
+        data: {
+          status: 'finished',
+          finishedAt: new Date()
+        }
+      })
+    );
+
+    // Залізобетонно переводимо принтер у вільний зелений стан idle
+    transactionOperations.push(
+      prisma.printer.update({
+        where: { id: printerId },
         data: { 
           status: 'idle',
           progress: 0,
           remainingMins: 0
         }
-      });
+      })
+    );
 
-      // В) Проходимо по кожній тасці, що автоматично метчилась до цього друку
-      for (const task of job.printTasks) {
-        if (!success) {
-          // 🛑 Якщо БРАК: Повертаємо таску в чергу 'pending', кількість не чіпаємо
-          await tx.printTask.update({
-            where: { id: task.id },
-            data: { 
-              status: 'pending', 
-              printJobId: null // відв'язуємо від цього запуску
-            }
-          });
-        } else {
-          // ✅ Якщо УСПІШНО: Віднімаємо 1 деталь від загальної кількості в замовленні
-          const remainingQuantity = task.quantity - 1;
-          const isFullyFinished = remainingQuantity <= 0;
+    // Запускаємо транзакцію атомарно
+    await prisma.$transaction(transactionOperations);
 
-          await tx.printTask.update({
-            where: { id: task.id },
-            data: {
-              quantity: isFullyFinished ? 0 : remainingQuantity, 
-              status: isFullyFinished ? 'finished' : 'pending',   
-              printJobId: isFullyFinished ? task.printJobId : null, 
-              finishedAt: isFullyFinished ? new Date() : null
-            }
-          });
-        }
-      }
-    });
-
-    console.log(`👮‍♂️ Адмін валідував збірку [${jobId}]. Результат: ${finalJobStatus.toUpperCase()}. Принтер [${job.printerId}] вільний!`);
-    res.json({ success: true, message: 'Статус принтера скинуто в IDLE, чергу оновлено!' });
+    console.log(`✨ [DB Cleaned] Спул принтера [${printerId}] повністю зачищено. Замовлення оновлено.`);
+    res.json({ success: true, message: 'Статус принтера скинуто в IDLE, чергу замовлень повністю підчищено!' });
 
   } catch (error) {
     console.error('Помилка при підтвердженні друку адміном:', error);
-    res.status(500).json({ error: 'Внутрішня помилка сервера' });
+    res.status(500).json({ error: 'Внутрішня помилка сервера при збереженні та зачистці сесій' });
   }
 });
-
 
 // 10. БЕЗПАРОЛЬНИЙ ВХІД / РЕЄСТРАЦІЯ ЗА EMAIL
 app.post('/api/auth/login', async (req: Request, res: Response) => {
@@ -438,8 +511,6 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
   }
 });
 
-
-
 // 11. ОТРИМАННЯ ТАСОК КОНКРЕТНОГО КОРИСТУВАЧА (Для кабінету юзера)
 app.get('/api/tasks/user/:email', async (req: Request, res: Response) => {
   try {
@@ -464,23 +535,21 @@ app.get('/api/tasks/user/:email', async (req: Request, res: Response) => {
   }
 });
 
-
-// 🔄 ФУНКЦІЯ АВТОМАТИЧНОГО ПІДВИЩЕННЯ ПРІОРИТЕТУ (AGING)
+// 🔄 ФУНКЦІЯ АВТОМАТИЧНОГО ПІДВИЩЕННЯ ПРІОРИТЕТУ (AGING SYSTEM)
 async function agePrintTasks() {
   try {
     const NOW = new Date();
     
-    // 1. Визначаємо часові ліміти (наприклад: 3 дні на підвищення пріоритету)
-    //
-    const threeDaysAgo = new Date(NOW.getTime() - 1 * 60 * 1000);
+    // Пріоритети ростуть кожні 3 та 6 днів очікування в черзі (pending)
+    const threeDaysAgo = new Date(NOW.getTime() - 3 * 24 * 60 * 60 * 1000);
     const sixDaysAgo = new Date(NOW.getTime() - 6 * 24 * 60 * 60 * 1000);
 
-    // 2. Піднімаємо з LOW до MEDIUM, якщо замовлення чекає більше 3 днів
+    // 1. З LOW до MEDIUM
     const toMedium = await prisma.printTask.updateMany({
       where: {
         status: 'pending',
         priority: 'LOW',
-        createdAt: { lt: threeDaysAgo } // Створено раніше, ніж 3 дні тому
+        createdAt: { lt: threeDaysAgo }
       },
       data: {
         priority: 'MEDIUM'
@@ -488,10 +557,10 @@ async function agePrintTasks() {
     });
 
     if (toMedium.count > 0) {
-      console.log(`[Aging System] ${toMedium.count} задач(і) автоматично піднято з LOW до MEDIUM через час очікування.`);
+      console.log(`✨ [Aging System] ${toMedium.count} задач(і) автоматично піднято з LOW до MEDIUM через час очікування.`);
     }
 
-    // 3. Піднімаємо з MEDIUM до HIGH, якщо сумарно чекає більше 6 днів
+    // 2. З MEDIUM до HIGH
     const toHigh = await prisma.printTask.updateMany({
       where: {
         status: 'pending',
@@ -504,7 +573,7 @@ async function agePrintTasks() {
     });
 
     if (toHigh.count > 0) {
-      console.log(`[Aging System] ${toHigh.count} задач(і) отримали статус КРИТИЧНО/HIGH через тривалий простій черги!`);
+      console.log(`🔥 [Aging System] ${toHigh.count} задач(і) отримали статус КРИТИЧНО/HIGH через тривалий простій черги!`);
     }
 
   } catch (error) {
@@ -512,20 +581,18 @@ async function agePrintTasks() {
   }
 }
 
-
-// Запуск сервера
+// ─── ЗАПУСК СЕРВЕРА ТА ФОНОВИХ СЕРВІСІВ ───────────────────────────────────
 app.listen(PORT, () => {
   console.log(`🚀 Сервер запущенно на http://localhost:${PORT}`);
   
-  // Запускаємо фоновий MQTT-монітор принтерів
+  // Запускаємо фоновий MQTT-монітор принтерів Bambu Lab
   startBambuMonitor().catch(err => {
     console.error('Помилка при запуску Bambu Monitor:', err);
   });
 
-  // ЗАПУСКАЄМО СИСТЕМУ СТАРІННЯ ЗАДАЧ
-  // Функція буде стабільно перевіряти базу даних, наприклад, кожні 30 хвилин
+  // Запуск фонового сервісу старіння задач (Aging) кожні 30 хвилин
   setInterval(agePrintTasks, 30 * 60 * 1000);
   
-  // Одноразовий швидкий запуск при старті сервера для перевірки "хвостів"
+  // Одноразовий запуск при старті для перевірки існуючих задач
   agePrintTasks();
 });

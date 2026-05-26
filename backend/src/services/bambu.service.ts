@@ -154,36 +154,38 @@ function parseNamesFromSubtask(subtaskName: string): string[] | null {
 }
 
 
-// ─── ПІДКЛЮЧЕННЯ ДО ПРИНТЕРА ────────────────────────────────
+// ─── ПІДКЛЮЧЕННЯ ДО ПРИНТЕРА ТА ПОВНИЙ ЦИКЛ МОНІТОРИНГУ ───────────────────
 function connectPrinter(cfg: PrinterConfig): MqttClient {
   const brokerUrl = `mqtts://${cfg.ip}:8883`;
 
   log(`🔌 Підключаємось до ${C.bold}${cfg.name}${C.reset} (${cfg.ip})...`);
 
+  // 🔥 ОНОВЛЕНА СТАБІЛЬНА КОНФІГУРАЦІЯ: Повертаємо bblp + clean session + qos 0
   const client = mqtt.connect(brokerUrl, {
-    username:           'bblp',
+    username:           'bblp',                         // Універсальний логін для Bambu брокера
     password:           cfg.accessCode,
     clientId:           `bambu-monitor-${cfg.serial}-${Date.now()}`,
-    rejectUnauthorized: false,      // Bambu використовує самопідписаний TLS-сертифікат
-    reconnectPeriod:    5000,       // спробувати перепідключення кожні 5 сек
-    connectTimeout:     15000,
-    keepalive:          60,
+    rejectUnauthorized: false,                          // Ігноруємо самопідписаний TLS-сертифікат
+    reconnectPeriod:    5000,                           // Авто-перепідключення кожні 5 секунд
+    connectTimeout:     30000,                          // Таймаут на коннект (30 сек)
+    keepalive:          30,                             // Пінгуємо кожні 30 секунд, щоб тримати лінію
+    clean:              true,                           // Примусово вичищати стару сесію при реконнекті
   });
 
+  // ─── 1. ПОДІЯ: УСПІШНЕ З'ЄДНАННЯ ─────────────────────────────────────
   client.on('connect', () => {
     const state = states.get(cfg.serial)!;
     state.connected = true;
-    log(`${C.green}✅ Підключено: ${cfg.name}${C.reset}`);
+    log(`${C.green}✅ Підключено до брокера: ${cfg.name}${C.reset}`);
 
-    // 🔥 АВТО-РЕЄСТРАЦІЯ ПРИНТЕРА В БД (Фікс помилки Foreign key)
-    // upsert означає: якщо немає — створи, якщо є — онови
+    // Авто-реєстрація / Синхронізація заліза в базі
     prisma.printer.upsert({
       where: { id: cfg.serial },
       update: { status: 'idle', name: cfg.name },
       create: {
-        id: cfg.serial,     // Серійник як унікальний ID
-        name: cfg.name,
-        model: 'Bambu Lab', // Тимчасове ім'я моделі, адмін зможе змінити на сайті
+        id:     cfg.serial,     
+        name:   cfg.name,
+        model:  'Bambu Lab', 
         status: 'idle'
       }
     }).then(() => {
@@ -192,20 +194,21 @@ function connectPrinter(cfg: PrinterConfig): MqttClient {
       console.error(`\n${C.red}❌ [DB Error] Не вдалося зареєструвати принтер: ${err.message}${C.reset}`);
     });
 
-    // Підписуємось на репорти принтера
+    // Підписуємось на репорти. Ставимо чіткий qos: 0!
     const reportTopic = `device/${cfg.serial}/report`;
-    client.subscribe(reportTopic, { qos: 1 }, (err) => {
+    client.subscribe(reportTopic, { qos: 0 }, (err) => {
       if (err) {
         log(`${C.red}❌ Помилка підписки на ${reportTopic}: ${err.message}${C.reset}`);
       } else {
-        log(`${C.cyan}📡 Підписано на: ${reportTopic}${C.reset}`);
+        log(`${C.cyan}📡 Підписано на топік: ${reportTopic}${C.reset}`);
       }
     });
 
-    // Запитуємо повний статус одразу після підключення
+    // Запитуємо повний статус
     requestFullStatus(client, cfg.serial);
   });
 
+  // ─── 2. ПОДІЯ: ОБРОБКА ПАКЕТІВ ТЕЛЕМЕТРІЇ ──────────────────────────────
   client.on('message', (topic, payload) => {
     const state = states.get(cfg.serial)!;
     state.rawMessages++;
@@ -216,11 +219,10 @@ function connectPrinter(cfg: PrinterConfig): MqttClient {
       if (data.print) {
         const incoming = data.print as BambuReport;
         
-        // 🚨 1. ДЕТЕКЦІЯ СТАТУСІВ ДЛЯ БАЗИ ДАНИХ (Робимо ДО злиття станів)
         const wasRunning = state.lastReport?.gcode_state === 'RUNNING';
         const nowRunning = incoming.gcode_state === 'RUNNING';
 
-        // --- СТАРТ ДРУКУ (Автоматичний метчинг за назвою файлу) ---
+        // 🟢 СТАРТ ДРУКУ
         if (nowRunning && !wasRunning) {
           const subtaskName = incoming.subtask_name || state.lastReport?.subtask_name || 'Невідоме завдання';
           const simpleNames = parseNamesFromSubtask(subtaskName) || [subtaskName];
@@ -235,9 +237,8 @@ function connectPrinter(cfg: PrinterConfig): MqttClient {
               remainingMins: 0
             }
           }).then(async (job) => {
-            log(`${C.green}✅ [DB] Створено PrintJob: ${job.id}${C.reset}`);
+            log(`${C.green}✅ [DB] Створено новий PrintJob сесії: ${job.id}${C.reset}`);
 
-            // Також при старті друку відразу міняємо статус самого заліза в таблиці Printer
             await prisma.printer.update({
               where: { id: cfg.serial },
               data: { status: 'printing', progress: 0, remainingMins: 0 }
@@ -263,7 +264,7 @@ function connectPrinter(cfg: PrinterConfig): MqttClient {
           }).catch(err => console.error(`\n${C.red}❌ [DB Error] Помилка старту друку: ${err.message}${C.reset}`));
         }
 
-        // --- ФІНІШ ДРУКУ (Перехід у режим очікування перевірки адміном) ---
+        // 🟡 ФІНІШ ДРУКУ
         if ((incoming.gcode_state === 'FINISH' || incoming.gcode_state === 'FAILED') && state.lastReport?.gcode_state !== incoming.gcode_state) {
           
           prisma.printJob.findFirst({
@@ -276,7 +277,6 @@ function connectPrinter(cfg: PrinterConfig): MqttClient {
                 data: { status: 'waiting_confirmation', progress: 100, remainingMins: 0 }
               });
 
-              // Переводимо залізо в стан контролю якості
               await prisma.printer.update({
                 where: { id: cfg.serial },
                 data: { status: 'waiting_confirmation', progress: 100, remainingMins: 0 }
@@ -289,10 +289,10 @@ function connectPrinter(cfg: PrinterConfig): MqttClient {
           state.stlNames = [];
         }
 
-        // 🚨 2. ЗЛИТТЯ СТАНІВ (Deep Merge)
+        // Злиття станів
         state.lastReport = updateReport(state.lastReport, incoming) as BambuReport;
         
-        // 🚨 3. ОЧИЩЕННЯ АРТЕФАКТІВ ІНТЕРФЕЙСУ ТЕРМІНАЛУ
+        // Очищення артефактів інтерфейсу терміналу
         if (state.lastReport) {
           const st = state.lastReport.gcode_state;
           if (st === 'IDLE' || st === 'FINISH') {
@@ -301,7 +301,6 @@ function connectPrinter(cfg: PrinterConfig): MqttClient {
             state.lastReport.mc_percent = 0;        
             state.lastReport.mc_remaining_time = 0;
 
-            // Якщо принтер простоює — синхронізуємо бд, що він вільний
             if (st === 'IDLE') {
               prisma.printer.update({
                 where: { id: cfg.serial },
@@ -311,27 +310,24 @@ function connectPrinter(cfg: PrinterConfig): MqttClient {
           }
         }
 
-        // 🔥 🚨 4. ПОТОЧНИЙ РЕАЛ-ТАЙМ МОНІТОРИНГ ТЕЛЕМЕТРІЇ (Записуємо кожен пакет у БД)
+        // 🔵 ЖИВИЙ РЕАЛ-ТАЙМ МОНІТОРИНГ ТЕЛЕМЕТРІЇ
         if (state.lastReport && state.lastReport.gcode_state === 'RUNNING') {
           const currentPercent = state.lastReport.mc_percent ?? 0;
           const currentRemaining = state.lastReport.mc_remaining_time ?? 0;
           const currentNozzle = state.lastReport.nozzle_temper ?? undefined;
           const currentBed = state.lastReport.bed_temper ?? undefined;
 
-          // А) Оновлюємо залізо в таблиці Printer (щоб картка світилась синім і міняла %)
           prisma.printer.update({
             where: { id: cfg.serial },
             data: {
               status: 'printing',
               progress: Number(currentPercent),
               remainingMins: Number(currentRemaining),
-              // Якщо додавав температури у схему — Prisma їх проковтне:
               ...(currentNozzle !== undefined && { nozzleTemp: Math.floor(currentNozzle) }),
               ...(currentBed !== undefined && { bedTemp: Math.floor(currentBed) }),
             }
           }).catch(() => {});
 
-          // Б) Оновлюємо поточну сесію друку в таблиці PrintJob (щоб монітор у модалці крутився)
           prisma.printJob.findFirst({
             where: { printerId: cfg.serial, status: 'printing' },
             orderBy: { startedAt: 'desc' }
@@ -354,30 +350,64 @@ function connectPrinter(cfg: PrinterConfig): MqttClient {
         renderDashboard();
       }
     } catch (e) {
-      // Ігноруємо невалідні бінарні пакети
+      // Ігноруємо порожні пакети
     }
   });
 
+// ─── 3. ПОДІЇ СТАТУСІВ ЗВ'ЯЗКУ ТА АГРЕСИВНИЙ АВТО-РЕКОННЕКТ ───────────────────
   client.on('error', (err) => {
     const state = states.get(cfg.serial)!;
     state.connected = false;
-    log(`${C.red}❌ MQTT помилка [${cfg.name}]: ${err.message}${C.reset}`);
+    log(`${C.red}❌ MQTT помилка з'єднання [${cfg.name}]: ${err.message}${C.reset}`);
+    
+    // 🔥 КРИТИЧНИЙ ФІКС: Якщо принтер скинув авторизацію або TLS сесію,
+    // бібліотека MQTT сама не піде на реконнект. Змушуємо її примусово через 5 секунд!
+    if (!client.reconnecting) {
+      log(`${C.yellow}🔄 [Auto-Recovery] Примусовий перезапуск TLS-сесії для ${cfg.name} через 5 сек...${C.reset}`);
+      setTimeout(() => {
+        if (!state.connected) {
+          client.reconnect();
+        }
+      }, 5000);
+    }
+  });
+
+  client.on('close', () => {
+    const state = states.get(cfg.serial);
+    if (state && state.connected) {
+      state.connected = false;
+      log(`${C.yellow}⚠️  Канал зв'язку з ${cfg.name} закрився сокетом. Спроба реконнекту...${C.reset}`);
+      renderDashboard();
+    }
+    
+    // 🔥 ПІДСТРАХОВКА: Якщо сокет закрився і клієнт застряг в лімбі
+    setTimeout(() => {
+      const freshState = states.get(cfg.serial);
+      if (freshState && !freshState.connected && !client.reconnecting) {
+        log(`${C.yellow}🔄 [Timeout Recovery] Стукаємо до ${cfg.name} примусово...${C.reset}`);
+        client.reconnect();
+      }
+    }, 7000);
   });
 
   client.on('offline', () => {
     const state = states.get(cfg.serial)!;
     state.connected = false;
-    log(`${C.yellow}⚠️  Принтер оффлайн: ${cfg.name}${C.reset}`);
+    log(`${C.yellow}⚠️  Принтер перейшов у режим оффлайн: ${cfg.name}${C.reset}`);
     renderDashboard();
+    
+    // Якщо впав в офлайн — примусово смикаємо коннект
+    if (!client.reconnecting) {
+      client.reconnect();
+    }
   });
 
   client.on('reconnect', () => {
-    log(`${C.yellow}🔄 Перепідключення: ${cfg.name}...${C.reset}`);
+    log(`${C.yellow}🔄 Виконується спроба реконнекту до ${cfg.name}...${C.reset}`);
   });
 
   return client;
 }
-
 // Запросити повний статус (pushall) — принтер відповість одним великим JSON
 function requestFullStatus(client: MqttClient, serial: string): void {
   const requestTopic = `device/${serial}/request`;
